@@ -354,14 +354,18 @@ Workflow: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 1. The deploy job connects as `weekender@SERVER` with a dedicated ed25519 key. The server's host key is pinned in a secret, and `StrictHostKeyChecking=yes` is set.
 2. On the server, that key is restricted in `authorized_keys` to `command="/opt/weekender/scripts/deploy.sh"`. Even if the key leaked, it could only trigger a redeploy of code that is already on `main`.
 3. The workflow passes the **commit SHA that passed CI** as the SSH command. `deploy.sh` accepts it only if it is a full SHA that exists on `origin/main`.
-4. The job's **short-lived `GITHUB_TOKEN`** (read-only for packages) goes over **stdin**, so it never appears in a command line or log. The server uses it once to pull `weekender-app:<sha>` from GHCR, then logs out. The token expires when the job ends.
-5. `deploy.sh` then:
-   - takes a lock, so only one deploy runs at a time;
-   - resets the checkout to that commit;
-   - keeps the running image as `weekender-app:previous`, then switches to the tested image;
-   - if the registry can't be reached, it falls back to building on the server;
-   - waits up to 3 minutes for the app's health check to pass;
-   - on success, prunes old images; on failure, **rolls back** to the previous commit and image (no rebuild needed) and fails the job.
+4. The job's **short-lived `GITHUB_TOKEN`** (read-only for packages) goes over **stdin**, so it never appears in a command line or log. It expires when the job ends.
+5. `deploy.sh` ([source](scripts/deploy.sh)) then:
+   1. takes a lock, so only one deploy runs at a time;
+   2. **pulls `ghcr.io/zezekim/weekender-app:<sha>`, the image CI just tested, before changing anything.** If the pull fails, the deploy stops with the old version still running untouched. It never falls back to an untested build;
+   3. tags the running image `weekender-app:previous` as the rollback point;
+   4. switches the checkout to the tested commit, tags the pulled image as the one Compose runs, and starts it with `docker compose up --no-build` (no build on the server);
+   5. restarts Caddy or Authelia if their config changed in this commit;
+   6. waits up to 3 minutes for the app's health check.
+
+   **Any failure** after the rollback point triggers an error trap (`set -E` + `trap … ERR`) that switches back to the previous commit and the **retained previous image**, with no rebuild, then checks the rollback is healthy and fails the job. That covers a failing command such as `docker compose up` as well as an unhealthy app.
+
+   Manual runs (no token) build on the server instead. For testing, `SIMULATE_FAILURE=pull|compose|unhealthy` forces each failure path. The CI key can't set environment variables, so drills only happen when run by hand.
 6. The smoke test checks `/api/health` and the home page over public HTTPS, and confirms the Settings API still returns 401/302 without a login. Lighthouse then audits the live site.
 
 `.env`, the Authelia secrets and `data/` are git-ignored, so deploys never touch configuration or saved settings.

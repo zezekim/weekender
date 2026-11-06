@@ -57,6 +57,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Lint shell scripts
+        run: shellcheck -S warning scripts/*.sh
+
       - name: Validate compose file and Caddyfile (both TLS modes)
         run: |
           cp .env.example .env && docker compose config --quiet
