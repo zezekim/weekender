@@ -2,6 +2,14 @@
 	admin off
 }
 
+# TLS_MODE=internal → Caddy's local CA (local development)
+# TLS_MODE=acme     → free Let's Encrypt / ZeroSSL certificate (public server)
+(tls_internal) {
+	tls internal
+}
+(tls_acme) {
+}
+
 (app_headers) {
 	header {
 		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
@@ -11,7 +19,7 @@
 }
 
 {$APP_DOMAIN} {
-	tls {$TLS_MODE:internal}
+	import tls_{$TLS_MODE:internal}
 	encode zstd gzip
 
 	header {

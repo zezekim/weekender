@@ -1,0 +1,101 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt pytest
+      - run: python -m pytest -q
+        working-directory: backend
+
+  frontend:
+    name: Frontend type-check & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+
+  docker:
+    name: Docker image & config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build app image
+        run: docker build -t weekender-app:ci .
+      - name: Validate compose file
+        run: cp .env.example .env && docker compose config --quiet
+      - name: Validate Caddyfile (local and public TLS modes)
+        run: |
+          for mode in internal acme; do
+            docker run --rm -e APP_DOMAIN=example.com -e TLS_MODE=$mode \
+              -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.8.4-alpine \
+              caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          done
+
+  deploy:
+    name: Deploy to production
+    needs: [backend, frontend, docker]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://${{ vars.APP_DOMAIN }}
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # The server-side key is a forced command: it can only run scripts/deploy.sh,
+      # which receives this commit SHA and deploys exactly what CI just tested.
+      - name: Deploy ${{ github.sha }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "${{ github.sha }}"
+
+      - name: Smoke test
+        run: |
+          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors "https://${{ vars.APP_DOMAIN }}/api/health"
+          curl -fsS -o /dev/null "https://${{ vars.APP_DOMAIN }}/"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://${{ vars.APP_DOMAIN }}/api/admin/settings")
+          [ "$code" = 401 ] || [ "$code" = 302 ] || { echo "Settings API is not protected (HTTP $code)"; exit 1; }
+          echo "Healthy, and Settings is still behind Authelia."
+
+      - name: Clean up key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

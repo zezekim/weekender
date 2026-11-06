@@ -1,5 +1,9 @@
 # Weekender
 
+[![CI/CD](https://github.com/zezekim/weekender/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/zezekim/weekender/actions/workflows/ci-cd.yml)
+
+**Live:** https://173.230.134.61.sslip.io
+
 **The weekend. Sorted.** Pick any city in the world and get the Saturday–Sunday forecast, two outings for children aged 4–8 and an Italian restaurant for dinner. Every pick links to its source and shows when it was checked.
 
 ![Weekender home](docs/screenshots/home.png)
@@ -20,6 +24,7 @@
 - [Quick start (local, Docker)](#quick-start-local-docker)
 - [Local development without Docker](#local-development-without-docker)
 - [Deploying to an Ubuntu server](#deploying-to-an-ubuntu-server)
+- [CI/CD: automatic deployments](#cicd-automatic-deployments)
 - [Operations: start, stop, restart, update](#operations)
 - [Configuration](#configuration)
 - [Services, ports and data sources](#services-ports-and-data-sources)
@@ -170,13 +175,15 @@ flowchart LR
 │   │   ├── components/          # CitySearch, WeatherSection, places, WeatherIcon, ui
 │   │   └── pages/               # Planner (home + city), Settings
 │   └── package.json
+├── .github/workflows/ci-cd.yml  # test → build → deploy pipeline
 ├── authelia/configuration.yml   # no secrets; domain injected via template filter
 ├── Caddyfile
 ├── docker-compose.yml
 ├── Dockerfile                   # multi-stage: Node build → Python runtime (non-root)
 ├── scripts/
 │   ├── setup.sh                 # .env, Authelia secrets, admin user, data dirs
-│   └── server-bootstrap.sh      # fresh Ubuntu: Docker, app user, firewall
+│   ├── server-bootstrap.sh      # fresh Ubuntu: Docker, swap, app user, firewall, deploy key
+│   └── deploy.sh                # pull tested commit, rebuild, health-check, roll back on failure
 ├── docs/screenshots/
 ├── .env.example
 └── VERIFICATION.md
@@ -225,35 +232,102 @@ npm run dev
 
 ## Deploying to an Ubuntu server
 
-Tested on a fresh Ubuntu LTS install with root SSH access.
+Tested on Ubuntu 24.04 LTS (1 vCPU, 2 GB RAM).
+
+### 1. Prepare the server (once, as root)
 
 ```bash
-# 1. As root on the server: install Docker, create the app user, configure the firewall
-scp -r . root@SERVER_IP:/opt/weekender
 ssh root@SERVER_IP
-cd /opt/weekender && scripts/server-bootstrap.sh
-chown -R weekender:weekender /opt/weekender
-
-# 2. Configure the public hostname and TLS
-cp .env.example .env
-#   APP_DOMAIN=203.0.113.10.sslip.io   ← your server IP + .sslip.io (free wildcard DNS)
-#   TLS_MODE=you@example.com           ← an email address = free Let's Encrypt certificate
-
-# 3. Generate secrets and the admin user, then start
-scripts/setup.sh
-docker compose up -d --build
+curl -fsSLO https://raw.githubusercontent.com/zezekim/weekender/main/scripts/server-bootstrap.sh
+REPO_URL=https://github.com/zezekim/weekender.git \
+DEPLOY_PUBKEY="ssh-ed25519 AAAA… github-actions-deploy" \
+bash server-bootstrap.sh
 ```
-
-The app is then served at `https://<server-ip>.sslip.io`. Visiting `http://<server-ip>` redirects there.
-
-**Why a hostname rather than a bare IP?** Authelia's session cookies need a domain, and browsers won't attach cookies to IP addresses that way. [sslip.io](https://sslip.io) maps `203.0.113.10.sslip.io` to `203.0.113.10` with no DNS setup, and Let's Encrypt will issue a real certificate for it.
 
 `server-bootstrap.sh`:
 - installs Docker Engine and the Compose plugin from Docker's official apt repository, and enables the daemon at boot;
-- creates an unprivileged `weekender` user to own the files;
+- adds 2 GB of swap if the machine has less than 1.5 GB, so image builds don't run out of memory;
+- creates an unprivileged `weekender` user, adds it to the `docker` group and clones the repository to `/opt/weekender`;
+- installs the **CI deploy key as a forced command**: that key can run `scripts/deploy.sh` and nothing else (no shell, no port forwarding, no pty);
 - enables **ufw**, allowing only **22/tcp, 80/tcp, 443/tcp and 443/udp**. SSH is allowed first, so you can't lock yourself out.
 
 It **does not** touch root's password, SSH keys or `sshd_config`.
+
+### 2. Configure and start (once, as `weekender`)
+
+```bash
+sudo -iu weekender
+cd /opt/weekender
+cp .env.example .env
+sed -i 's/^APP_DOMAIN=.*/APP_DOMAIN=SERVER_IP.sslip.io/; s/^TLS_MODE=.*/TLS_MODE=acme/' .env
+ADMIN_PASSWORD='choose-a-long-password' scripts/setup.sh
+scripts/deploy.sh
+```
+
+The app is then served at `https://SERVER_IP.sslip.io`, with a publicly trusted certificate that Caddy obtains and renews automatically. Visiting `http://SERVER_IP` redirects there.
+
+**Why a hostname rather than a bare IP?** Authelia's session cookies need a domain, and browsers won't attach cookies to IP addresses that way. [sslip.io](https://sslip.io) maps `203.0.113.10.sslip.io` to `203.0.113.10` with no DNS setup, and certificate authorities will issue real certificates for it.
+
+---
+
+## CI/CD: automatic deployments
+
+Every push to `main` is tested and then deployed to the server automatically. Pull requests run the same checks but are never deployed.
+
+```mermaid
+flowchart LR
+    P[git push main] --> B[Backend tests<br/>pytest]
+    P --> F[Frontend<br/>tsc + vite build]
+    P --> D[Docker<br/>image build, compose + Caddyfile validation]
+    B & F & D --> X[Deploy job]
+    X -->|SSH, forced command| S[scripts/deploy.sh on server]
+    S --> R[git reset to the tested SHA<br/>docker compose up --build]
+    R --> H{App healthy?}
+    H -->|yes| OK[Prune old images ✓]
+    H -->|no| RB[Roll back to previous commit ✗]
+    X --> T[Smoke test<br/>/api/health, home page,<br/>Settings still protected]
+```
+
+Workflow: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
+
+| Job | Runs on | What it checks |
+|---|---|---|
+| **Backend tests** | push, PR | `pytest` on Python 3.12 |
+| **Frontend** | push, PR | `npm ci`, TypeScript type-check and production build on Node 22 |
+| **Docker** | push, PR | Builds the app image, validates `docker-compose.yml`, validates the Caddyfile in both TLS modes |
+| **Deploy** | push to `main` only, after all three pass | SSH deploy plus a post-deploy smoke test |
+
+### How the deploy works
+
+1. The deploy job connects as `weekender@SERVER` with a dedicated ed25519 key. The server's host key is pinned in a secret, and `StrictHostKeyChecking=yes` is set.
+2. On the server, that key is restricted in `authorized_keys` to `command="/opt/weekender/scripts/deploy.sh"`. Even if the key leaked, it could only trigger a redeploy of code that is already on `main`.
+3. The workflow passes the **commit SHA that passed CI**. `deploy.sh` accepts it only if it is a full SHA that exists on `origin/main`; otherwise it deploys the tip of `main`.
+4. `deploy.sh` then:
+   - takes a lock, so only one deploy runs at a time;
+   - resets the checkout to that commit and runs `docker compose up -d --build`;
+   - waits up to 3 minutes for the app's health check to pass;
+   - on success, prunes old images; on failure, **rolls back** to the previous commit and fails the job.
+5. The smoke test checks `/api/health` and the home page over public HTTPS, and confirms the Settings API still returns 401/302 without a login.
+
+`.env`, the Authelia secrets and `data/` are git-ignored, so deploys never touch configuration or saved settings.
+
+### Repository secrets and variables
+
+| Name | Kind | Value |
+|---|---|---|
+| `DEPLOY_SSH_KEY` | secret | Private half of the deploy key |
+| `DEPLOY_KNOWN_HOSTS` | secret | Output of `ssh-keyscan SERVER_IP` |
+| `DEPLOY_HOST` | secret | Server IP |
+| `DEPLOY_USER` | secret | `weekender` |
+| `APP_DOMAIN` | variable | e.g. `173.230.134.61.sslip.io`, used for the environment URL and smoke test |
+
+### Manual deploys and rotating the key
+
+- **Re-run a deploy:** Actions → CI/CD → *Run workflow*, or on the server `sudo -iu weekender /opt/weekender/scripts/deploy.sh`.
+- **Rotate the key:**
+  1. `ssh-keygen -t ed25519 -f deploy_key -N ""`
+  2. Replace the line in `/home/weekender/.ssh/authorized_keys`, keeping the `command=…` prefix.
+  3. `gh secret set DEPLOY_SSH_KEY < deploy_key`
 
 ---
 
@@ -266,7 +340,7 @@ It **does not** touch root's password, SSH keys or `sshd_config`.
 | Stop | `docker compose down` |
 | Status and health | `docker compose ps` |
 | Follow logs | `docker compose logs -f app` (or `caddy`, `authelia`) |
-| Update to the latest code | `git pull && docker compose up -d --build` |
+| Update to the latest code | automatic on push to `main`, or `scripts/deploy.sh` |
 | Clear cached results | Settings → Save, or `docker compose restart app` |
 | Reset the admin password | delete `authelia/users_database.yml`, re-run `scripts/setup.sh`, then `docker compose restart authelia` |
 
@@ -282,7 +356,7 @@ All configuration is in `.env`, which is git-ignored and created from `.env.exam
 | Variable | Default | Description |
 |---|---|---|
 | `APP_DOMAIN` | `weekender.localhost` | Public hostname used by Caddy and Authelia |
-| `TLS_MODE` | `internal` | `internal` = local CA; an email address = Let's Encrypt |
+| `TLS_MODE` | `internal` | `internal` = Caddy's local CA (local development); `acme` = publicly trusted certificate (server) |
 | `PUID` / `PGID` | set by `setup.sh` | Unprivileged UID/GID that the app and Authelia run as |
 | `GEOAPIFY_API_KEY` | – | Optional. Free tier, 3,000 requests a day |
 | `GOOGLE_PLACES_API_KEY` | – | Optional. **Billed** beyond Google's free monthly usage |
@@ -501,13 +575,15 @@ Results are in **[VERIFICATION.md](VERIFICATION.md)**.
 - **Nominatim's restaurant search relies on names** ("italian restaurant", "pizzeria", "trattoria"), so its recall is lower than a tag-based search.
 - **The cache and circuit breaker are in memory.** They reset on restart and are per process.
 - **There is one admin user, with no 2FA by default.** Authelia supports TOTP; enabling it is a one-line config change.
-- **No end-to-end tests run in CI yet.** The Playwright checks are run manually.
+- **Browser end-to-end tests are not in CI yet.** CI runs the unit tests, type-check, builds and config validation; the Playwright checks are run manually.
+- **Images are built on the server.** On a 1 vCPU machine a deploy takes a few minutes. Building in CI and pushing to GHCR would make deploys faster.
 
 ## Roadmap
 
 - [ ] TOTP two-factor login for Settings
 - [ ] A shared Redis cache and rate limiter
 - [ ] Playwright end-to-end tests in GitHub Actions
+- [ ] Build images in CI and pull them from GHCR on the server
 - [ ] Map previews (self-hosted tiles) and venue photos from Wikimedia Commons
 - [ ] Indoor/outdoor filters and age sliders
 - [ ] Structured logs and basic metrics
