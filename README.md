@@ -310,7 +310,7 @@ ADMIN_PASSWORD='choose-a-long-password' scripts/setup.sh
 scripts/deploy.sh
 ```
 
-The app is then served at `https://SERVER_IP.sslip.io`, with a publicly trusted certificate that Caddy obtains and renews automatically. Visiting `http://SERVER_IP` redirects there.
+The app is then served at `https://SERVER_IP.sslip.io`, with a publicly trusted certificate that Caddy obtains and renews automatically. It is also reachable over plain HTTP at `http://SERVER_IP`. Settings and sign-in are never served over HTTP; they redirect to the HTTPS address so passwords and session cookies are always encrypted. "Near me" needs HTTPS, because browsers only allow location access on secure pages.
 
 **Why a hostname rather than a bare IP?** Authelia's session cookies need a domain, and browsers won't attach cookies to IP addresses that way. [sslip.io](https://sslip.io) maps `203.0.113.10.sslip.io` to `203.0.113.10` with no DNS setup, and certificate authorities will issue real certificates for it.
 

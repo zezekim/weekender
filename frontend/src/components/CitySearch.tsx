@@ -64,6 +64,11 @@ export function CitySearch({
   /** Rounded to ~1 km on the server before it's sent anywhere; never stored. */
   const nearMe = () => {
     setLocError(null);
+    if (!window.isSecureContext) {
+      // Browsers only allow location on HTTPS.
+      setLocError("Near me needs the secure (https) version of this site.");
+      return;
+    }
     if (!("geolocation" in navigator)) {
       setLocError("Location isn’t available in this browser.");
       return;

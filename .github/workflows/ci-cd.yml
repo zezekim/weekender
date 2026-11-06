@@ -162,6 +162,10 @@ jobs:
           live=$(curl -sSI "https://${{ vars.APP_DOMAIN }}/" | tr -d '\r' | sed -n 's/^content-security-policy: //Ip')
           [ "$expected" = "$live" ] || { echo "Live CSP does not match the Caddyfile"; echo "expected: $expected"; echo "live:     $live"; exit 1; }
           curl -fsS -o /dev/null "https://${{ vars.APP_DOMAIN }}/"
+          # Plain HTTP on the bare IP serves the app; Settings there must bounce to HTTPS.
+          curl -fsS -o /dev/null "http://${{ secrets.DEPLOY_HOST }}/api/health"
+          loc=$(curl -s -o /dev/null -w '%{redirect_url}' "http://${{ secrets.DEPLOY_HOST }}/settings")
+          case "$loc" in https://*) ;; *) echo "Settings over HTTP did not redirect to HTTPS ($loc)"; exit 1;; esac
           code=$(curl -s -o /dev/null -w '%{http_code}' "https://${{ vars.APP_DOMAIN }}/api/admin/settings")
           [ "$code" = 401 ] || [ "$code" = 302 ] || { echo "Settings API is not protected (HTTP $code)"; exit 1; }
           echo "Healthy, and Settings is still behind Authelia."

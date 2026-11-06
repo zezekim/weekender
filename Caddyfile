@@ -59,7 +59,30 @@
 	}
 }
 
-# Anything else on plain HTTP (e.g. http://<server-ip>) goes to the canonical HTTPS host.
-http:// {
+# The HTTPS hostname on port 80 always upgrades to HTTPS.
+http://{$APP_DOMAIN} {
 	redir https://{$APP_DOMAIN}{uri} permanent
+}
+
+# Plain HTTP on the bare IP (e.g. http://<server-ip>) serves the public app directly.
+# Sign-in and Settings never run over plain HTTP: they redirect to the HTTPS host,
+# so passwords and session cookies are only ever sent encrypted.
+http:// {
+	encode zstd gzip
+	header -Server
+
+	request_header -Remote-User
+	request_header -Remote-Groups
+	request_header -Remote-Email
+	request_header -Remote-Name
+
+	@secure path /settings /settings/* /api/admin/* /authelia /authelia/*
+	handle @secure {
+		redir https://{$APP_DOMAIN}{uri} 302
+	}
+
+	handle {
+		import app_headers
+		reverse_proxy app:8000
+	}
 }
