@@ -66,7 +66,7 @@ jobs:
               caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
           done
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build app image
         uses: docker/build-push-action@v6
         with:
