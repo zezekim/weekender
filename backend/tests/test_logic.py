@@ -141,3 +141,10 @@ def test_google_museum_names_must_fit_category():
     assert _name_fits("childrens_museum", "Sydney Children's Museum")
     assert _name_fits("science_center", "Powerhouse Science Centre")
     assert _name_fits("aquarium", "SEA LIFE Sydney Aquarium")
+
+
+def test_request_urls_are_not_logged():
+    import logging
+    import app.main  # noqa: F401 — configures logging
+
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING

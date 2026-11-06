@@ -109,7 +109,8 @@ rollback() {
   set +e
   log "✗ Deploy failed: $1" >&2
   log "↩ Rolling back to ${PREVIOUS_SHA:0:7}" >&2
-  docker compose logs --tail 30 app >&2 2>/dev/null
+  # Only the app's own status lines; request logs are never echoed into CI output.
+  docker compose logs --tail 200 app 2>/dev/null | grep -E "ERROR|Traceback|Exception" | tail -15 >&2
 
   local from
   from=$(git rev-parse HEAD)

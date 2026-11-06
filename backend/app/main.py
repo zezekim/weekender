@@ -22,6 +22,9 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 log = logging.getLogger("planner")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# httpx logs every request URL at INFO, and some providers (e.g. Geoapify) take the
+# API key as a query parameter. Keep request URLs out of the logs entirely.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 STATIC_DIR = Path(os.environ.get("STATIC_DIR", Path(__file__).resolve().parents[2] / "frontend" / "dist"))
 
