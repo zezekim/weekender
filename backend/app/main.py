@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import mimetypes
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,8 +14,11 @@ from fastapi.staticfiles import StaticFiles
 
 from . import recommend, settings_store
 from .core import SourceError, cache, close_client, utcnow_iso
-from .providers import geocoding, places, weather
+from .providers import geocoding, osm, photos, places, weather
+from .recommend import haversine_km
 from .weekend import local_now, target_weekend
+
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 log = logging.getLogger("planner")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -21,9 +26,32 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 STATIC_DIR = Path(os.environ.get("STATIC_DIR", Path(__file__).resolve().parents[2] / "frontend" / "dist"))
 
 
+# Popular cities are fetched in the background so demos and first visits are instant.
+# Paris, Tokyo, Sydney, Springfield (MO), Portland (OR). Set PREWARM_CITIES="" to disable.
+DEFAULT_PREWARM = "2988507,1850147,2147714,4409896,5746545"
+
+
+async def prewarm_loop() -> None:
+    ids = [int(x) for x in os.environ.get("PREWARM_CITIES", DEFAULT_PREWARM).split(",") if x.strip().isdigit()]
+    if not ids:
+        return
+    await asyncio.sleep(15)
+    while True:
+        for city_id in ids:
+            for fn in (city_weather, city_activities, city_restaurant):
+                try:
+                    await fn(city_id)
+                except Exception as exc:  # noqa: BLE001 — warming is best effort
+                    log.info("prewarm %s/%s skipped: %s", city_id, fn.__name__, exc)
+        log.info("prewarmed %d cities", len(ids))
+        await asyncio.sleep(3 * 3600)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    task = asyncio.create_task(prewarm_loop())
     yield
+    task.cancel()
     await close_client()
 
 
@@ -47,6 +75,23 @@ async def health():
 @app.get("/api/cities")
 async def search_cities(q: str = Query(min_length=2, max_length=80)):
     return {"results": await geocoding.search(q.strip()), "source": {"name": geocoding.SOURCE, "url": "https://open-meteo.com/en/docs/geocoding-api"}}
+
+
+@app.get("/api/cities/nearest")
+async def nearest_city(lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-180, le=180)):
+    """Closest known city to the visitor. Coordinates are rounded to ~1 km and not stored."""
+    place = await osm.reverse_locality(lat, lon)
+    if not place:
+        raise HTTPException(404, "We couldn’t find a city near you.")
+    name, country = place
+    results = await geocoding.search(name, 10)
+    ranked = sorted(
+        (r for r in results if not country or r["country_code"] == country),
+        key=lambda r: haversine_km(lat, lon, r["latitude"], r["longitude"]),
+    )
+    if not ranked or haversine_km(lat, lon, ranked[0]["latitude"], ranked[0]["longitude"]) > 60:
+        raise HTTPException(404, "We couldn’t find a city near you.")
+    return {"city": ranked[0]}
 
 
 async def _city_context(city_id: int) -> dict[str, Any]:
@@ -86,14 +131,17 @@ async def city_activities(city_id: int):
     wctx = recommend.weather_context(days)
     c = ctx["city"]
     found = await places.find(c["latitude"], c["longitude"], "activity", lambda cands: len(cands) >= 2)
-    items = recommend.pick_activities(found["candidates"], wctx)
+    items, alternates = recommend.rank_activities(found["candidates"], wctx)
+    await photos.attach(items + alternates)
     return {
         "status": "ok" if items else "none_found",
         "items": items,
+        "alternates": alternates,
         "weather_summary": wctx["summary"],
         "weather_considered": wctx["known"],
         "retrieved_at": found["retrieved_at"],
         "cached": found["cached"],
+        "stale": found["stale"],
         "attempts": found["attempts"],
     }
 
@@ -104,12 +152,15 @@ async def city_restaurant(city_id: int):
     found = await places.find(
         c["latitude"], c["longitude"], "restaurant", lambda cands: recommend.pick_restaurant(cands) is not None
     )
-    item = recommend.pick_restaurant(found["candidates"])
+    ranked = recommend.rank_restaurants(found["candidates"])
+    await photos.attach(ranked)
     return {
-        "status": "ok" if item else "none_found",
-        "item": item,
+        "status": "ok" if ranked else "none_found",
+        "item": ranked[0] if ranked else None,
+        "alternates": ranked[1:],
         "retrieved_at": found["retrieved_at"],
         "cached": found["cached"],
+        "stale": found["stale"],
         "attempts": found["attempts"],
     }
 
@@ -136,8 +187,11 @@ async def get_settings(user: str = Depends(require_admin)):
 
 @app.put("/api/admin/settings")
 async def put_settings(patch: dict[str, Any], user: str = Depends(require_admin)):
+    before = settings_store.public_view()
     updated = settings_store.update(patch)
-    cache.clear()  # provider choice/keys changed — don't serve results from the old config
+    data_affecting = ("secrets", "places_provider", "overpass_urls")
+    if any(before[k] != updated[k] for k in data_affecting):
+        cache.clear()  # keys or providers changed — don't serve results from the old config
     log.info("settings updated by %s", user)
     return {"user": user, "settings": updated}
 

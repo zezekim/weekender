@@ -58,6 +58,7 @@ def candidate_from_tags(
         "phone": tags.get("phone") or tags.get("contact:phone"),
         "tags": tags,
         "notable": bool(tags.get("wikidata") or tags.get("wikipedia")),
+        "wikidata": tags.get("wikidata") if str(tags.get("wikidata", "")).startswith("Q") else None,
         "source": {"name": source_name, "url": osm_url(osm_type, osm_id), "license": "© OpenStreetMap contributors (ODbL)"},
     }
     if kind == "activity":
@@ -156,7 +157,10 @@ ACTIVITY_PHRASES = ["aquarium", "zoo", "planetarium", "museum", "theme park", "p
 RESTAURANT_QUERIES = ["italian restaurant", "pizzeria", "trattoria"]
 
 
-async def _nominatim(params: dict[str, Any]) -> list[dict[str, Any]]:
+SEARCH_DEFAULTS = {"format": "jsonv2", "extratags": 1, "addressdetails": 1, "namedetails": 1, "bounded": 1, "limit": 20, "accept-language": "en"}
+
+
+async def _nominatim(params: dict[str, Any], path: str = "search") -> Any:
     global _nominatim_last
     async with _nominatim_lock:  # usage policy: max 1 request per second
         wait = 1.05 - (time.monotonic() - _nominatim_last)
@@ -164,8 +168,8 @@ async def _nominatim(params: dict[str, Any]) -> list[dict[str, Any]]:
             await asyncio.sleep(wait)
         try:
             resp = await client().get(
-                "https://nominatim.openstreetmap.org/search",
-                params={"format": "jsonv2", "extratags": 1, "addressdetails": 1, "namedetails": 1, "bounded": 1, "limit": 20, "accept-language": "en", **params},
+                f"https://nominatim.openstreetmap.org/{path}",
+                params={**(SEARCH_DEFAULTS if path == "search" else {"format": "jsonv2", "accept-language": "en"}), **params},
                 headers={"User-Agent": user_agent()},
             )
         finally:
@@ -216,3 +220,14 @@ async def nominatim(lat: float, lon: float, kind: str) -> list[dict[str, Any]]:
     if failures == len(queries):
         raise SourceError("OpenStreetMap Nominatim", "Nominatim search did not respond.")
     return out
+
+
+async def reverse_locality(lat: float, lon: float) -> tuple[str, str] | None:
+    """(place name, country code) for coordinates, rounded to ~1 km for privacy."""
+    try:
+        r = await _nominatim({"lat": round(lat, 2), "lon": round(lon, 2), "zoom": 10, "addressdetails": 1}, path="reverse")
+    except (httpx.HTTPError, ValueError) as exc:
+        raise SourceError("OpenStreetMap Nominatim", "Location lookup did not respond.") from exc
+    a = (r or {}).get("address") or {}
+    name = a.get("city") or a.get("town") or a.get("village") or a.get("municipality") or a.get("county")
+    return (name, (a.get("country_code") or "").upper()) if name else None

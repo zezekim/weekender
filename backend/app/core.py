@@ -1,10 +1,14 @@
-"""Shared plumbing: HTTP client, TTL cache, source metadata and errors."""
+"""Shared plumbing: HTTP client, persistent cache, source metadata and errors."""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -57,32 +61,66 @@ def check_simulated_failure(target: str, source: str) -> None:
         raise SourceError(source, f"{source} is unavailable (simulated outage enabled in Settings).")
 
 
-class TTLCache:
-    """Tiny in-process cache so we stay polite to free public APIs."""
+class Cache:
+    """SQLite-backed cache in the data volume, so results survive restarts and deploys.
 
-    def __init__(self, maxsize: int = 512):
-        self._data: dict[str, tuple[float, Any]] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
-        self._maxsize = maxsize
+    Fresh entries are served until `ttl`. If refreshing fails with a SourceError,
+    an expired entry up to `stale_for` seconds old is served instead and marked
+    "stale", so the UI can say "last checked 2 hours ago" rather than show nothing.
+    Failures themselves are never cached.
+    """
 
-    async def get_or_set(self, key: str, ttl: float, factory: Callable[[], Awaitable[Any]]) -> tuple[Any, bool]:
-        """Return (value, from_cache). Failures are never cached."""
-        hit = self._data.get(key)
-        if hit and hit[0] > time.monotonic():
-            return hit[1], True
-        lock = self._locks.setdefault(key, asyncio.Lock())
+    def __init__(self, path: Path):
+        self._path = path
+        self._db: sqlite3.Connection | None = None
+        self._db_lock = threading.Lock()
+        self._key_locks: dict[str, asyncio.Lock] = {}
+
+    def _conn(self) -> sqlite3.Connection:
+        if self._db is None:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._db = sqlite3.connect(self._path, check_same_thread=False, isolation_level=None)
+            self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.execute("CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, stored REAL, expires REAL, value TEXT)")
+        return self._db
+
+    def _read(self, key: str) -> tuple[float, float, Any] | None:
+        with self._db_lock:
+            row = self._conn().execute("SELECT stored, expires, value FROM cache WHERE key = ?", (key,)).fetchone()
+        return (row[0], row[1], json.loads(row[2])) if row else None
+
+    def _write(self, key: str, ttl: float, value: Any) -> None:
+        now = time.time()
+        with self._db_lock:
+            self._conn().execute(
+                "INSERT OR REPLACE INTO cache (key, stored, expires, value) VALUES (?, ?, ?, ?)",
+                (key, now, now + ttl, json.dumps(value)),
+            )
+
+    async def get_or_set(
+        self, key: str, ttl: float, factory: Callable[[], Awaitable[Any]], stale_for: float = 0
+    ) -> tuple[Any, str]:
+        """Return (value, status) where status is "fresh", "cached" or "stale"."""
+        hit = self._read(key)
+        if hit and hit[1] > time.time():
+            return hit[2], "cached"
+        lock = self._key_locks.setdefault(key, asyncio.Lock())
         async with lock:
-            hit = self._data.get(key)
-            if hit and hit[0] > time.monotonic():
-                return hit[1], True
-            value = await factory()
-            if len(self._data) >= self._maxsize:
-                self._data.pop(next(iter(self._data)))
-            self._data[key] = (time.monotonic() + ttl, value)
-            return value, False
+            hit = self._read(key)
+            if hit and hit[1] > time.time():
+                return hit[2], "cached"
+            try:
+                value = await factory()
+            except SourceError:
+                if hit and stale_for and time.time() - hit[0] < stale_for:
+                    return hit[2], "stale"
+                raise
+            self._write(key, ttl, value)
+            return value, "fresh"
 
     def clear(self) -> None:
-        self._data.clear()
+        with self._db_lock:
+            self._conn().execute("DELETE FROM cache")
 
 
-cache = TTLCache()
+cache = Cache(settings_store.DATA_DIR / "cache.sqlite3")

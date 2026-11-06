@@ -57,3 +57,78 @@ def test_restaurant_requires_verified_cuisine():
     assert pick_restaurant([{"name": "Bistro", "cuisine_kind": None, "source": {"name": "t"}}]) is None
     r = pick_restaurant([{"name": "Luigi", "cuisine_kind": "italian", "distance_km": 1, "source": {"name": "OSM"}, "tags": {}}])
     assert r["name"] == "Luigi" and "Italian" in r["why"]
+
+
+# --------------------------------------------------------------------------- weather extras
+
+from app.providers.weather import best_window, uv_note  # noqa: E402
+
+
+def _hours(probs, icon="clear"):
+    return [{"time": f"2026-11-07T{h:02d}:00", "precip_probability": p, "icon": icon} for h, p in zip(range(8, 21), probs)]
+
+
+def test_best_window_finds_longest_dry_run():
+    #        08  09  10  11  12  13  14  15  16  17  18  19  20
+    probs = [60, 50, 10, 10, 10, 20, 70, 80, 10, 10, 90, 90, 90]
+    assert best_window(_hours(probs)) == {"start": "2026-11-07T10:00", "end": "2026-11-07T14:00"}
+
+
+def test_best_window_none_when_wet_all_day():
+    assert best_window(_hours([80] * 13)) is None
+    assert best_window(_hours([0] * 13, icon="rain")) is None
+
+
+def test_uv_note_thresholds():
+    assert uv_note(1) is None and uv_note(None) is None
+    assert "Moderate" in uv_note(4) and "High" in uv_note(6.5) and "Very high" in uv_note(9)
+
+
+# --------------------------------------------------------------------------- alternates
+
+from app.recommend import rank_activities, rank_restaurants  # noqa: E402
+
+
+def test_alternates_exclude_picks_and_prefer_new_categories():
+    cands = [_cand("zoo", "Z1"), _cand("zoo", "Z2"), _cand("aquarium", "A1"), _cand("playground", "P1"), _cand("park", "K1")]
+    picks, alts = rank_activities(cands, weather_context(None), alternates=3)
+    assert len(picks) == 2 and not {p["id"] for p in picks} & {a["id"] for a in alts}
+    # a brand-new category beats a second zoo
+    assert alts[0]["category"] not in {p["category"] for p in picks}
+
+
+def test_rank_restaurants_only_verified():
+    rows = [
+        {"name": "Pizzeria", "cuisine_kind": "pizza", "distance_km": 0.5, "source": {"name": "OSM"}, "tags": {}},
+        {"name": "Trattoria", "cuisine_kind": "italian", "distance_km": 1.0, "source": {"name": "OSM"}, "tags": {}},
+        {"name": "Burger", "cuisine_kind": None, "source": {"name": "OSM"}},
+    ]
+    ranked = rank_restaurants(rows)
+    assert [r["name"] for r in ranked] == ["Trattoria", "Pizzeria"]
+
+
+# --------------------------------------------------------------------------- cache
+
+import asyncio  # noqa: E402
+
+from app.core import Cache, SourceError  # noqa: E402
+
+
+def test_cache_serves_stale_when_source_fails(tmp_path):
+    c = Cache(tmp_path / "c.sqlite3")
+
+    async def ok():
+        return {"v": 1}
+
+    async def boom():
+        raise SourceError("X", "down")
+
+    async def run():
+        assert await c.get_or_set("k", -1, ok, stale_for=60) == ({"v": 1}, "fresh")  # already expired
+        assert await c.get_or_set("k", 60, boom, stale_for=60) == ({"v": 1}, "stale")
+        try:
+            await c.get_or_set("other", 60, boom, stale_for=60)
+        except SourceError:
+            return True
+
+    assert asyncio.run(run())

@@ -1,7 +1,8 @@
 import { motion } from "framer-motion";
-import { CheckCircle2, Droplets, Sunrise, Umbrella, Wind } from "lucide-react";
+import { CheckCircle2, Droplets, Sun, Sunrise, Timer, Umbrella, Wind } from "lucide-react";
 import type { Async } from "../api";
 import { fmtDayMonth, fmtHour, fmtLocalClock, fmtWeekday, precip, temp, tempUnit, wind } from "../format";
+import { windowHours } from "../plan";
 import type { Unit, Weather, WeatherDay } from "../types";
 import { Card, CountUp, ErrorState, Skeleton, SourceLine, fadeUp, stagger } from "./ui";
 import { WeatherIcon } from "./WeatherIcon";
@@ -77,7 +78,9 @@ function DayCard({ day, unit }: { day: WeatherDay; unit: Unit }) {
         {day.hourly.length > 0 && (
           <motion.div
             className="hours"
-            aria-label="Daytime forecast every two hours"
+            role="region"
+            tabIndex={0}
+            aria-label={`Daytime forecast for ${fmtWeekday(day.date)}, every two hours`}
             variants={stagger(0.05)}
             initial="hidden"
             whileInView="show"
@@ -94,9 +97,27 @@ function DayCard({ day, unit }: { day: WeatherDay; unit: Unit }) {
           </motion.div>
         )}
 
-        <div className="verdict">
-          {v.good ? <CheckCircle2 size={17} color="var(--green)" /> : <Umbrella size={17} color="var(--orange)" />}
-          <span>{v.text}</span>
+        <div className="verdicts">
+          <div className="verdict">
+            {v.good ? <CheckCircle2 size={17} color="var(--green)" /> : <Umbrella size={17} color="var(--orange)" />}
+            <span>{v.text}</span>
+          </div>
+          {day.best_window && (
+            <div className="verdict">
+              <Timer size={17} color="var(--accent)" />
+              <span>
+                {windowHours(day.best_window) >= 10
+                  ? "Dry from morning to evening."
+                  : `Best time outside: ${fmtLocalClock(day.best_window.start)} – ${fmtLocalClock(day.best_window.end)}`}
+              </span>
+            </div>
+          )}
+          {day.uv_note && (
+            <div className="verdict">
+              <Sun size={17} color="var(--sun)" />
+              <span>{day.uv_note}</span>
+            </div>
+          )}
         </div>
       </div>
     </Card>
@@ -167,6 +188,7 @@ export function WeatherSection({ state, unit }: { state: Async<Weather>; unit: U
             url={state.data.source.url}
             retrievedAt={state.data.source.retrieved_at}
             cached={state.data.source.cached}
+            stale={state.data.source.stale}
             extra={<span>All times are local.</span>}
           />
         </>

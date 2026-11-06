@@ -40,6 +40,8 @@ export interface WeatherDay {
   sunrise: string;
   sunset: string;
   hourly: HourPoint[];
+  best_window: { start: string; end: string } | null;
+  uv_note: string | null;
   assessment: { wet: boolean; cold: boolean; hot: boolean; outdoor_friendly: boolean };
 }
 
@@ -49,6 +51,7 @@ export interface SourceInfo {
   license?: string;
   retrieved_at?: string;
   cached?: boolean;
+  stale?: boolean;
 }
 
 export interface Weather {
@@ -61,6 +64,15 @@ export interface Attempt {
   provider: string;
   ok: boolean;
   detail: string;
+}
+
+export interface Photo {
+  url: string;
+  width: number | null;
+  height: number | null;
+  credit: string;
+  license: string | null;
+  page: string | null;
 }
 
 export interface Place {
@@ -77,6 +89,7 @@ export interface Place {
   rating_count?: number;
   source: SourceInfo;
   why: string;
+  photo?: Photo | null;
 }
 
 export interface Activity extends Place {
@@ -96,17 +109,20 @@ interface PlacesMeta {
   status: "ok" | "none_found";
   retrieved_at: string;
   cached: boolean;
+  stale?: boolean;
   attempts: Attempt[];
 }
 
 export interface Activities extends PlacesMeta {
   items: Activity[];
+  alternates: Activity[];
   weather_summary: string | null;
   weather_considered: boolean;
 }
 
 export interface Dining extends PlacesMeta {
   item: Restaurant | null;
+  alternates: Restaurant[];
 }
 
 export type Unit = "metric" | "imperial";

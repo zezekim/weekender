@@ -65,6 +65,40 @@ def _endpoint() -> tuple[str, dict[str, str]]:
     return "https://api.open-meteo.com/v1/forecast", {}
 
 
+WET_ICONS = {"rain", "drizzle", "storm", "snow"}
+
+
+def best_window(hours: list[dict[str, Any]]) -> dict[str, str] | None:
+    """Longest daytime run (08:00–20:00) with a low chance of rain and no wet weather."""
+    best: tuple[int, int] | None = None
+    start = None
+    daytime = [h for h in hours if 8 <= int(h["time"][11:13]) <= 20]
+    for i, h in enumerate(daytime + [None]):
+        dry = h is not None and (h["precip_probability"] or 0) < 30 and h["icon"] not in WET_ICONS
+        if dry and start is None:
+            start = i
+        elif not dry and start is not None:
+            if best is None or i - start > best[1] - best[0]:
+                best = (start, i)
+            start = None
+    if not best or best[1] - best[0] < 2:  # under two dry hours isn't a window worth naming
+        return None
+    first, last = daytime[best[0]], daytime[best[1] - 1]
+    return {"start": first["time"], "end": f"{last['time'][:11]}{int(last['time'][11:13]) + 1:02d}:00"}
+
+
+def uv_note(uv: float | None) -> str | None:
+    if uv is None:
+        return None
+    if uv >= 8:
+        return "Very high UV. Sunscreen, hats and shade at midday."
+    if uv >= 6:
+        return "High UV. Pack sunscreen and hats."
+    if uv >= 3:
+        return "Moderate UV. Sunscreen for longer stretches outside."
+    return None
+
+
 def assess(day: dict[str, Any]) -> dict[str, Any]:
     """Classify a day for activity planning. Thresholds are deliberately simple."""
     prob = day.get("precip_probability")
@@ -102,7 +136,7 @@ async def weekend_forecast(lat: float, lon: float, tz: str, saturday: date, sund
         return {"data": data, "retrieved_at": utcnow_iso()}
 
     cache_key = f"wx:{params['latitude']}:{params['longitude']}:{saturday}"
-    result, cached = await cache.get_or_set(cache_key, 1800, fetch)
+    result, status = await cache.get_or_set(cache_key, 1800, fetch, stale_for=12 * 3600)
     data = result["data"]
     daily, units, hourly = data["daily"], data["daily_units"], data.get("hourly", {})
 
@@ -110,7 +144,7 @@ async def weekend_forecast(lat: float, lon: float, tz: str, saturday: date, sund
     for i, iso in enumerate(daily["time"]):
         code = daily["weather_code"][i]
         label, icon = WMO.get(code, ("Unknown conditions", "cloudy"))
-        hours = [
+        all_hours = [
             {
                 "time": t,
                 "temp": hourly["temperature_2m"][j],
@@ -118,8 +152,9 @@ async def weekend_forecast(lat: float, lon: float, tz: str, saturday: date, sund
                 "icon": WMO.get(hourly["weather_code"][j], ("", "cloudy"))[1],
             }
             for j, t in enumerate(hourly.get("time", []))
-            if t.startswith(iso) and 8 <= int(t[11:13]) <= 20 and int(t[11:13]) % 2 == 0
+            if t.startswith(iso)
         ]
+        hours = [h for h in all_hours if 8 <= int(h["time"][11:13]) <= 20 and int(h["time"][11:13]) % 2 == 0]
         day = {
             "date": iso,
             "code": code,
@@ -134,6 +169,8 @@ async def weekend_forecast(lat: float, lon: float, tz: str, saturday: date, sund
             "sunrise": daily["sunrise"][i],
             "sunset": daily["sunset"][i],
             "hourly": hours,
+            "best_window": best_window(all_hours),
+            "uv_note": uv_note(daily["uv_index_max"][i]),
         }
         day["assessment"] = assess(day)
         days.append(day)
@@ -149,6 +186,7 @@ async def weekend_forecast(lat: float, lon: float, tz: str, saturday: date, sund
             "name": SOURCE,
             "url": "https://open-meteo.com/",
             "retrieved_at": result["retrieved_at"],
-            "cached": cached,
+            "cached": status != "fresh",
+            "stale": status == "stale",
         },
     }

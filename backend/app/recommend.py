@@ -162,25 +162,41 @@ def _weather_note(indoor: bool, ctx: dict[str, Any]) -> str | None:
 # --------------------------------------------------------------------------- activities
 
 
-def pick_activities(candidates: list[dict[str, Any]], ctx: dict[str, Any], limit: int = 2) -> list[dict[str, Any]]:
-    scored = []
-    for c in candidates:
-        label, indoor, base, _, _ = CATEGORIES[c["category"]]
-        score = base
-        score += 2 if c.get("notable") else 0
-        score += 1 if c.get("website") else 0
-        score += 0.5 if c.get("address") else 0
-        if c.get("rating"):
-            score += max(0.0, (c["rating"] - 4.0)) * 3
-        if c.get("rating_count", 0) < 20 and c.get("rating") is not None:
-            score -= 1
-        if ctx["known"]:
-            bias = ctx["indoor_bias"]
-            score += 4 * bias if indoor else -4 * max(bias, 0) + (2 if bias < 0 else 0)
-        dist = c.get("distance_km") or 0
-        score -= max(0.0, dist - 3) * 0.35
-        scored.append((score, c))
-    scored.sort(key=lambda s: -s[0])
+def _activity_score(c: dict[str, Any], ctx: dict[str, Any]) -> float:
+    _, indoor, base, _, _ = CATEGORIES[c["category"]]
+    score = base
+    score += 2 if c.get("notable") else 0
+    score += 1 if c.get("website") else 0
+    score += 0.5 if c.get("address") else 0
+    if c.get("rating"):
+        score += max(0.0, (c["rating"] - 4.0)) * 3
+    if c.get("rating_count", 0) < 20 and c.get("rating") is not None:
+        score -= 1
+    if ctx["known"]:
+        bias = ctx["indoor_bias"]
+        score += 4 * bias if indoor else -4 * max(bias, 0) + (2 if bias < 0 else 0)
+    score -= max(0.0, (c.get("distance_km") or 0) - 3) * 0.35
+    return score
+
+
+def _present_activity(c: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    label, indoor, _, icon, why = CATEGORIES[c["category"]]
+    return {
+        **{k: v for k, v in c.items() if k not in {"tags", "notable"}},
+        "category_label": label,
+        "indoor": indoor,
+        "icon": icon,
+        "why": why,
+        "weather_note": _weather_note(indoor, ctx),
+    }
+
+
+def rank_activities(
+    candidates: list[dict[str, Any]], ctx: dict[str, Any], limit: int = 2, alternates: int = 4
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Two picks from different categories (one indoor + one outdoor in mixed
+    weather), then a few runners-up for "Show me another" — new categories first."""
+    scored = sorted(((_activity_score(c, ctx), c) for c in candidates), key=lambda s: -s[0])
 
     picks: list[dict[str, Any]] = []
     used_categories: set[str] = set()
@@ -196,20 +212,22 @@ def pick_activities(candidates: list[dict[str, Any]], ctx: dict[str, Any], limit
         used_categories.add(c["category"])
         picks.append(c)
 
-    out = []
-    for c in picks:
-        label, indoor, _, icon, why = CATEGORIES[c["category"]]
-        out.append(
-            {
-                **{k: v for k, v in c.items() if k not in {"tags", "notable"}},
-                "category_label": label,
-                "indoor": indoor,
-                "icon": icon,
-                "why": why,
-                "weather_note": _weather_note(indoor, ctx),
-            }
-        )
-    return out
+    picked_ids = {c["id"] for c in picks}
+    rest = [(score, c) for score, c in scored if c["id"] not in picked_ids]
+    seen_cats = set(used_categories)
+    runners: list[dict[str, Any]] = []
+    for _, c in sorted(rest, key=lambda s: (s[1]["category"] in used_categories, -s[0])):
+        if len(runners) == alternates:
+            break
+        if c["category"] in seen_cats and any(r["category"] == c["category"] for r in runners):
+            continue  # at most one runner-up per category keeps the choices varied
+        seen_cats.add(c["category"])
+        runners.append(c)
+    return [_present_activity(c, ctx) for c in picks], [_present_activity(c, ctx) for c in runners]
+
+
+def pick_activities(candidates: list[dict[str, Any]], ctx: dict[str, Any], limit: int = 2) -> list[dict[str, Any]]:
+    return rank_activities(candidates, ctx, limit, alternates=0)[0]
 
 
 def _has_other(scored, indoor: bool, used: set[str]) -> bool:
@@ -229,28 +247,22 @@ def cuisine_kind(cuisine: str | None, name: str = "") -> str | None:
     return None
 
 
-def pick_restaurant(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
-    best, best_score = None, -math.inf
-    for c in candidates:
-        kind = c.get("cuisine_kind")
-        if kind is None:
-            continue  # never recommend something we cannot verify as Italian
-        tags = c.get("tags") or {}
-        score = 5.0 if kind == "italian" else 2.5
-        score += 2 if c.get("website") else 0
-        score += 1 if c.get("opening_hours") else 0
-        score += 1 if c.get("address") else 0
-        score += 2 if tags.get("kids_area") == "yes" or c.get("good_for_children") else 0
-        score += 1 if tags.get("highchair") == "yes" else 0
-        score += 0.5 if tags.get("outdoor_seating") == "yes" else 0
-        if c.get("rating"):
-            score += (c["rating"] - 4.0) * 4 + min(c.get("rating_count", 0), 2000) / 1000
-        score -= max(0.0, (c.get("distance_km") or 0) - 1.5) * 0.6
-        if score > best_score:
-            best, best_score = c, score
-    if not best:
-        return None
+def _restaurant_score(c: dict[str, Any]) -> float:
+    tags = c.get("tags") or {}
+    score = 5.0 if c["cuisine_kind"] == "italian" else 2.5
+    score += 2 if c.get("website") else 0
+    score += 1 if c.get("opening_hours") else 0
+    score += 1 if c.get("address") else 0
+    score += 2 if tags.get("kids_area") == "yes" or c.get("good_for_children") else 0
+    score += 1 if tags.get("highchair") == "yes" else 0
+    score += 0.5 if tags.get("outdoor_seating") == "yes" else 0
+    if c.get("rating"):
+        score += (c["rating"] - 4.0) * 4 + min(c.get("rating_count", 0), 2000) / 1000
+    score -= max(0.0, (c.get("distance_km") or 0) - 1.5) * 0.6
+    return score
 
+
+def _present_restaurant(best: dict[str, Any]) -> dict[str, Any]:
     tags = best.get("tags") or {}
     facts = []
     if best["cuisine_kind"] == "italian":
@@ -277,3 +289,15 @@ def pick_restaurant(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
         **{k: v for k, v in best.items() if k not in {"tags", "notable"}},
         "why": " ".join(facts),
     }
+
+
+def rank_restaurants(candidates: list[dict[str, Any]], limit: int = 4) -> list[dict[str, Any]]:
+    """Best verified-Italian options first. Unverified cuisine is never included."""
+    verified = [c for c in candidates if c.get("cuisine_kind")]
+    verified.sort(key=lambda c: -_restaurant_score(c))
+    return [_present_restaurant(c) for c in verified[:limit]]
+
+
+def pick_restaurant(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    ranked = rank_restaurants(candidates, 1)
+    return ranked[0] if ranked else None

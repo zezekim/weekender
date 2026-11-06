@@ -16,8 +16,13 @@ All checks ran against the full Docker stack (Caddy, Authelia and the app) at `h
 | 10 | **Mobile layout** at 390×844 (iPhone size) | Screenshots, reviewed manually | ✅ Single column, no horizontal scroll, the hourly strip scrolls sideways |
 | 11 | Console errors and broken assets | Automated (Playwright `console` and `requestfailed` listeners) | ✅ None in the app. The strict CSP correctly blocks `eval`, so the browser test context runs with CSP bypassed only for its own polling. |
 | 12 | Theme toggle | Automated (Playwright) | ✅ Starts from the system theme; a click switches to dark, the choice survives a reload, and a second click switches back to light |
+| 13 | Browser + accessibility suite | Automated (Playwright + axe, runs in CI on every push) | ✅ 10/10: WCAG 2.1 AA in light and dark, weekend dates checked independently, cards fully opaque, `.ics` export, outages, theme, mobile overflow |
+| 14 | Weekend plan, map, photos, swap, near me | Automated (Playwright) + screenshot review | ✅ Paris: "Near me" from 48.857, 2.352 resolves to Paris; 3 map pins inside the frame; Wikimedia photos with credits; "Show me another" swaps a card; `.ics` has `TZID=Europe/Paris` |
 
 ## Issues found and fixed during verification
+- Accessibility: axe found that the lightest grey text and the blue were below 4.5:1 contrast, and that links within text relied on colour alone. Adjusted the colour values (light blue `#0066cc`; dark-mode buttons `#0071e3` with links `#5eb1ff`) and underlined links within text.
+- Activity cards were stuck at opacity 0 after the "Show me another" swap wrapper interrupted the grid's animation. Playwright still counts that as "visible", so the browser suite now checks each card's effective opacity.
+- MapLibre styles its container as `position: relative`, and React's class updates removed that class, which collapsed the map. The map now has its own inner container.
 - Overpass timeouts made a page take about 60 s. Fixed by querying mirrors in parallel, a 10 s budget and the circuit breaker; the worst case is now about 25 s and the next request takes about 5 s.
 - Authelia would not start with a read-only root filesystem. Its startup checks fail; I found this by bisecting with `docker run`. That container now runs with a writable filesystem but still non-root, with no capabilities.
 - Place names came back in Japanese for Tokyo. Fixed by requesting English names from Nominatim (`accept-language=en`, `namedetails`, `name:en`).

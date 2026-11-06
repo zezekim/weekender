@@ -96,6 +96,7 @@ export function SourceLine({
   url,
   retrievedAt,
   cached,
+  stale,
   attempts,
   extra,
 }: {
@@ -103,6 +104,7 @@ export function SourceLine({
   url?: string | null;
   retrievedAt?: string;
   cached?: boolean;
+  stale?: boolean;
   attempts?: Attempt[];
   extra?: ReactNode;
 }) {
@@ -124,9 +126,10 @@ export function SourceLine({
         {retrievedAt && (
           <span title={new Date(retrievedAt).toString()}>
             Retrieved {fmtRetrieved(retrievedAt)}
-            {cached ? " (cached)" : ""}
+            {cached && !stale ? " (cached)" : ""}
           </span>
         )}
+        {stale && <span className="source__stale">Live source unavailable. Showing the last saved results.</span>}
         {extra}
         {attempts && attempts.length > 0 && (
           <details>

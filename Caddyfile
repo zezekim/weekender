@@ -12,9 +12,11 @@
 
 (app_headers) {
 	header {
-		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		# Third parties, each for one job: Wikimedia (place photos), OpenFreeMap (map tiles).
+		# MapLibre renders in web workers created from blob: URLs.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob: https://upload.wikimedia.org https://thumb.wikimedia.org; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self' https://tiles.openfreemap.org; worker-src 'self' blob:; child-src blob:; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		X-Frame-Options DENY
-		Permissions-Policy "geolocation=(), camera=(), microphone=()"
+		Permissions-Policy "geolocation=(self), camera=(), microphone=()"
 	}
 }
 

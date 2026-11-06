@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Blocks,
   Bone,
@@ -17,6 +17,7 @@ import {
   PartyPopper,
   PawPrint,
   Pizza,
+  RefreshCw,
   Smile,
   Sparkles,
   Star,
@@ -27,8 +28,8 @@ import {
 import { useEffect, useState } from "react";
 import type { Async } from "../api";
 import { appleMapsUrl, distance, hostname } from "../format";
-import type { Activities, Activity, Dining, Place, Unit } from "../types";
-import { Card, EmptyState, ErrorState, Skeleton, SourceLine } from "./ui";
+import type { Activities, Activity, Dining, Photo, Place, Restaurant, Unit } from "../types";
+import { Card, EmptyState, ErrorState, Skeleton, SourceLine, easeOutExpo } from "./ui";
 
 const ICONS: Record<string, typeof Fish> = {
   museum: Landmark,
@@ -95,7 +96,28 @@ function PlaceFacts({ place, unit }: { place: Place; unit: Unit }) {
   );
 }
 
-function PlaceActions({ place }: { place: Place }) {
+/** Freely licensed photo of this exact place, credited. Disappears quietly if it fails to load. */
+function PlacePhoto({ photo, alt }: { photo: Photo; alt: string }) {
+  const [state, setState] = useState<"loading" | "ok" | "error">("loading");
+  if (state === "error") return null;
+  return (
+    <figure className={`place__photo ${state === "ok" ? "is-loaded" : ""}`}>
+      <img src={photo.url} alt={alt} loading="lazy" decoding="async" referrerPolicy="no-referrer" onLoad={() => setState("ok")} onError={() => setState("error")} />
+      <figcaption>
+        {photo.page ? (
+          <a href={photo.page} target="_blank" rel="noreferrer">
+            Photo: {photo.credit}
+            {photo.license ? `, ${photo.license}` : ""}
+          </a>
+        ) : (
+          <>Photo: {photo.credit}</>
+        )}
+      </figcaption>
+    </figure>
+  );
+}
+
+function PlaceActions({ place, onSwap }: { place: Place; onSwap?: () => void }) {
   return (
     <div className="place__actions">
       <a className="btn btn--small" href={appleMapsUrl(place.name, place.latitude, place.longitude)} target="_blank" rel="noreferrer">
@@ -106,13 +128,26 @@ function PlaceActions({ place }: { place: Place }) {
           View source <ExternalLink size={13} />
         </a>
       )}
+      {onSwap && (
+        <button className="btn btn--link btn--small place__swap" onClick={onSwap}>
+          <RefreshCw size={13} /> Show me another
+        </button>
+      )}
     </div>
   );
 }
 
-function ActivityCard({ a, unit }: { a: Activity; unit: Unit }) {
+const swapMotion = {
+  initial: { opacity: 0, y: 16, scale: 0.98 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: { opacity: 0, y: -12, scale: 0.98 },
+  transition: { duration: 0.45, ease: easeOutExpo },
+};
+
+function ActivityCard({ a, unit, onSwap }: { a: Activity; unit: Unit; onSwap?: () => void }) {
   return (
-    <Card lift>
+    <Card lift className={a.photo ? "card--photo" : ""}>
+      {a.photo && <PlacePhoto photo={a.photo} alt={a.name} />}
       <div className="place">
         <div className="place__head">
           <Tile icon={a.icon} />
@@ -131,7 +166,7 @@ function ActivityCard({ a, unit }: { a: Activity; unit: Unit }) {
           </div>
         )}
         <PlaceFacts place={a} unit={unit} />
-        <PlaceActions place={a} />
+        <PlaceActions place={a} onSwap={onSwap} />
       </div>
     </Card>
   );
@@ -171,7 +206,19 @@ function LoadingNote({ children }: { children: string }) {
   );
 }
 
-export function ActivitiesSection({ state, unit, city }: { state: Async<Activities>; unit: Unit; city: string }) {
+export function ActivitiesSection({
+  state,
+  unit,
+  city,
+  shown,
+  onSwap,
+}: {
+  state: Async<Activities>;
+  unit: Unit;
+  city: string;
+  shown: Activity[];
+  onSwap?: (slot: number) => void;
+}) {
   const d = state.data;
   return (
     <section className="section" aria-labelledby="act-title">
@@ -211,11 +258,16 @@ export function ActivitiesSection({ state, unit, city }: { state: Async<Activiti
       )}
 
       {d && d.items.length > 0 && (
-        <motion.div className="grid-2" initial="hidden" animate="show" variants={{ hidden: {}, show: { transition: { staggerChildren: 0.12 } } }}>
-          {d.items.map((a) => (
-            <ActivityCard key={a.id} a={a} unit={unit} />
+        // Each slot animates itself (entrance and swaps), so the grid passes no variants down.
+        <div className="grid-2">
+          {shown.map((a, slot) => (
+            <AnimatePresence mode="wait" key={slot}>
+              <motion.div key={a.id} {...swapMotion} style={{ display: "grid" }}>
+                <ActivityCard a={a} unit={unit} onSwap={onSwap && (() => onSwap(slot))} />
+              </motion.div>
+            </AnimatePresence>
           ))}
-        </motion.div>
+        </div>
       )}
 
       {d && (
@@ -225,6 +277,7 @@ export function ActivitiesSection({ state, unit, city }: { state: Async<Activiti
           retrievedAt={d.retrieved_at}
           cached={d.cached}
           attempts={d.attempts}
+          stale={d.stale}
           extra={d.items.length === 1 ? <span>We could only find one good match.</span> : undefined}
         />
       )}
@@ -232,9 +285,21 @@ export function ActivitiesSection({ state, unit, city }: { state: Async<Activiti
   );
 }
 
-export function DiningSection({ state, unit, city }: { state: Async<Dining>; unit: Unit; city: string }) {
+export function DiningSection({
+  state,
+  unit,
+  city,
+  shown,
+  onSwap,
+}: {
+  state: Async<Dining>;
+  unit: Unit;
+  city: string;
+  shown: Restaurant | null;
+  onSwap?: () => void;
+}) {
   const d = state.data;
-  const r = d?.item;
+  const r = shown;
   return (
     <section className="section" aria-labelledby="dine-title">
       <div className="section__head">
@@ -270,8 +335,10 @@ export function DiningSection({ state, unit, city }: { state: Async<Dining>; uni
       )}
 
       {r && (
-        <motion.div initial="hidden" animate="show">
-          <Card>
+        <AnimatePresence mode="wait">
+        <motion.div key={r.id} {...swapMotion}>
+          <Card className={r.photo ? "card--photo" : ""}>
+            {r.photo && <PlacePhoto photo={r.photo} alt={r.name} />}
             <div className="dining">
               <div className="place">
                 <div className="place__head">
@@ -287,7 +354,7 @@ export function DiningSection({ state, unit, city }: { state: Async<Dining>; uni
                   </div>
                 </div>
                 <p className="place__why">{r.why}</p>
-                <PlaceActions place={r} />
+                <PlaceActions place={r} onSwap={onSwap} />
               </div>
               <div className="dining__panel">
                 <PlaceFacts place={r} unit={unit} />
@@ -299,10 +366,11 @@ export function DiningSection({ state, unit, city }: { state: Async<Dining>; uni
             </div>
           </Card>
         </motion.div>
+        </AnimatePresence>
       )}
 
       {d && (
-        <SourceLine name={r?.source.name} url={r?.source.url} retrievedAt={d.retrieved_at} cached={d.cached} attempts={d.attempts} />
+        <SourceLine name={r?.source.name} url={r?.source.url} retrievedAt={d.retrieved_at} cached={d.cached} stale={d.stale} attempts={d.attempts} />
       )}
     </section>
   );

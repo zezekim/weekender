@@ -1,15 +1,17 @@
 import { AnimatePresence, motion, useScroll, useTransform } from "framer-motion";
 import { CalendarDays, Clock, CloudSun, Link2, Pizza, Search, Sparkles, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useApi } from "../api";
 import { CitySearch } from "../components/CitySearch";
 import { ActivitiesSection, DiningSection } from "../components/places";
+import { PlanSection } from "../components/PlanSection";
 import { ErrorState, Reveal, Skeleton, UnitToggle, easeOutExpo, fadeUp, stagger } from "../components/ui";
 import { WeatherIcon } from "../components/WeatherIcon";
 import { WeatherSection } from "../components/WeatherSection";
 import { flag, fmtCityDate, fmtCityNow, fmtWeekendRange, regionLine } from "../format";
-import type { Activities, Dining, Overview, Unit, Weather, WeatherIconKey } from "../types";
+import { loadRecent, rememberCity } from "../recent";
+import type { Activities, Dining, Overview, Restaurant, Unit, Weather, WeatherIconKey } from "../types";
 
 function useUnit(): [Unit, (u: Unit) => void] {
   const [unit, setUnit] = useState<Unit>(() => {
@@ -41,6 +43,32 @@ function useTick(ms: number) {
     return () => clearInterval(t);
   }, [ms]);
   return now;
+}
+
+/**
+ * The picks currently on screen plus a queue of runners-up. Swapping a slot
+ * brings in the next runner-up and sends the old pick to the back of the queue.
+ */
+function useSwappable<T extends { id: string }>(items: T[] | undefined, alternates: T[] | undefined, slots: number) {
+  const [shown, setShown] = useState<T[]>([]);
+  const queue = useRef<T[]>([]);
+  useEffect(() => {
+    setShown((items ?? []).slice(0, slots));
+    queue.current = [...(items ?? []).slice(slots), ...(alternates ?? [])];
+  }, [items, alternates, slots]);
+  const swap = useCallback(
+    (slot: number) => {
+      const q = queue.current;
+      if (!q.length || !shown[slot]) return;
+      const next = [...shown];
+      const incoming = q.shift()!;
+      q.push(next[slot]);
+      next[slot] = incoming;
+      setShown(next);
+    },
+    [shown],
+  );
+  return { shown, swap, canSwap: (alternates?.length ?? 0) > 0 };
 }
 
 const GLYPHS: WeatherIconKey[] = ["clear", "partly", "rain", "cloudy", "snow"];
@@ -111,6 +139,7 @@ const FEATURES = [
 ];
 
 function Home({ onSelect }: { onSelect: (id: number) => void }) {
+  const [recent] = useState(loadRecent);
   const heroRef = useRef<HTMLElement>(null);
   const { scrollYProgress } = useScroll({ target: heroRef, offset: ["start start", "end start"] });
   const opacity = useTransform(scrollYProgress, [0, 0.7], [1, 0]);
@@ -142,6 +171,16 @@ function Home({ onSelect }: { onSelect: (id: number) => void }) {
         </motion.p>
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 1, ease: easeOutExpo, delay: 0.7 }}>
           <CitySearch onSelect={(c) => onSelect(c.id)} autoFocus suggestions />
+          {recent.length > 0 && (
+            <div className="suggestions suggestions--recent">
+              <div className="suggestions__label">Recently viewed</div>
+              {recent.map((c) => (
+                <button key={c.id} className="chip" onClick={() => onSelect(c.id)} title={[c.admin1, c.country].filter(Boolean).join(", ")}>
+                  <span aria-hidden>{flag(c.country_code)}</span> {c.name}
+                </button>
+              ))}
+            </div>
+          )}
         </motion.div>
       </motion.section>
 
@@ -180,6 +219,13 @@ export function Planner() {
   const weather = useApi<Weather>(ready && `${ready}/weather`);
   const activities = useApi<Activities>(ready && `${ready}/activities`);
   const dining = useApi<Dining>(ready && `${ready}/restaurant`);
+  const acts = useSwappable(activities.data?.items, activities.data?.alternates, 2);
+  const mealItems = useMemo<Restaurant[]>(() => (dining.data?.item ? [dining.data.item] : []), [dining.data]);
+  const meal = useSwappable(mealItems, dining.data?.alternates, 1);
+
+  useEffect(() => {
+    if (overview.data) rememberCity(overview.data.city);
+  }, [overview.data]);
 
   useEffect(() => {
     document.title = overview.data ? `${overview.data.city.name} — Weekender` : "Weekender — The weekend. Sorted.";
@@ -267,11 +313,34 @@ export function Planner() {
 
           <WeatherSection state={weather} unit={unit} />
           <Reveal>
-            <ActivitiesSection state={activities} unit={unit} city={city.name} />
+            <ActivitiesSection
+              state={activities}
+              unit={unit}
+              city={city.name}
+              shown={acts.shown}
+              onSwap={acts.canSwap ? acts.swap : undefined}
+            />
           </Reveal>
           <Reveal>
-            <DiningSection state={dining} unit={unit} city={city.name} />
+            <DiningSection
+              state={dining}
+              unit={unit}
+              city={city.name}
+              shown={meal.shown[0] ?? null}
+              onSwap={meal.canSwap ? () => meal.swap(0) : undefined}
+            />
           </Reveal>
+          {!activities.loading && !dining.loading && (acts.shown.length > 0 || meal.shown.length > 0) && (
+            <Reveal>
+              <PlanSection
+                city={city}
+                weekend={overview.data.weekend}
+                activities={acts.shown}
+                restaurant={meal.shown[0] ?? null}
+                days={weather.data?.days ?? null}
+              />
+            </Reveal>
+          )}
         </>
       )}
     </div>

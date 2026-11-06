@@ -60,7 +60,9 @@ async def find(lat: float, lon: float, kind: str, accept: Callable[[list[dict[st
             return {"candidates": await fn(lat, lon, kind), "retrieved_at": utcnow_iso()}
 
         try:
-            result, cached = await cache.get_or_set(f"places:{key}:{kind}:{lat:.3f}:{lon:.3f}", 6 * 3600, fetch)
+            result, status = await cache.get_or_set(
+                f"places:{key}:{kind}:{lat:.3f}:{lon:.3f}", 6 * 3600, fetch, stale_for=14 * 86400
+            )
         except SourceError as exc:
             if key not in ("google", "geoapify"):  # keyed errors are usually config, not outages
                 _failed_at[key] = time.monotonic()
@@ -69,14 +71,18 @@ async def find(lat: float, lon: float, kind: str, accept: Callable[[list[dict[st
         if not accept(result["candidates"]):
             attempts.append({"provider": label, "ok": True, "detail": "Responded, but had no suitable matches nearby."})
             continue
-        _failed_at.pop(key, None)
-        attempts.append({"provider": label, "ok": True, "detail": "Used for these results."})
+        if status == "stale":
+            attempts.append({"provider": label, "ok": True, "detail": "Unavailable right now, so these are its most recent saved results."})
+        else:
+            _failed_at.pop(key, None)
+            attempts.append({"provider": label, "ok": True, "detail": "Used for these results."})
         return {
             "candidates": result["candidates"],
             "retrieved_at": result["retrieved_at"],
-            "cached": cached,
+            "cached": status != "fresh",
+            "stale": status == "stale",
             "attempts": attempts,
         }
     if all(not a["ok"] for a in attempts):
         raise SourceError("Places data", "Every places source failed: " + " ".join(a["detail"] for a in attempts))
-    return {"candidates": [], "retrieved_at": utcnow_iso(), "cached": False, "attempts": attempts}
+    return {"candidates": [], "retrieved_at": utcnow_iso(), "cached": False, "stale": False, "attempts": attempts}

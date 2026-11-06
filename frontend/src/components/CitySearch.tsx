@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { MapPin, Search } from "lucide-react";
+import { LocateFixed, MapPin, Search } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { compactPopulation, flag } from "../format";
@@ -22,6 +22,8 @@ export function CitySearch({
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const [locating, setLocating] = useState(false);
+  const [locError, setLocError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
 
@@ -57,6 +59,33 @@ export function CitySearch({
     setResults(null);
     inputRef.current?.blur();
     onSelect(c);
+  };
+
+  /** Rounded to ~1 km on the server before it's sent anywhere; never stored. */
+  const nearMe = () => {
+    setLocError(null);
+    if (!("geolocation" in navigator)) {
+      setLocError("Location isn’t available in this browser.");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      async ({ coords }) => {
+        try {
+          const r = await api<{ city: City }>(`/api/cities/nearest?lat=${coords.latitude.toFixed(3)}&lon=${coords.longitude.toFixed(3)}`);
+          choose(r.city);
+        } catch (e) {
+          setLocError((e as ApiError).message);
+        } finally {
+          setLocating(false);
+        }
+      },
+      (err) => {
+        setLocating(false);
+        setLocError(err.code === err.PERMISSION_DENIED ? "Location access is off. You can still search by name." : "We couldn’t get your location.");
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 600000 },
+    );
   };
 
   const onKey = (e: React.KeyboardEvent) => {
@@ -105,7 +134,23 @@ export function CitySearch({
           spellCheck={false}
         />
         {loading && <span className="search__spinner" aria-label="Searching" />}
+        <button
+          type="button"
+          className="search__locate"
+          onClick={nearMe}
+          disabled={locating}
+          aria-label="Use my location"
+          title="Use my location"
+        >
+          {locating ? <span className="search__spinner" /> : <LocateFixed size={18} />}
+          <span className="search__locate-label">Near me</span>
+        </button>
       </div>
+      {locError && (
+        <p className="search__error" role="alert">
+          {locError}
+        </p>
+      )}
 
       <AnimatePresence>
         {showDropdown && (

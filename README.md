@@ -58,6 +58,8 @@
 - High and low temperatures, conditions, chance of rain, rainfall, maximum wind, sunrise and sunset, and a two-hourly daytime strip from 08:00 to 20:00.
 - A °C / °F toggle that also converts wind (km/h ↔ mph), rainfall (mm ↔ in) and distances (km ↔ mi). The choice is remembered on the device.
 - A one-line verdict for each day ("A great day to be outside.", "Rain likely. Have a plan B.").
+- **Best time outside:** the longest dry daytime stretch, worked out from the hourly forecast (for example "Best time outside: 10 AM – 2 PM", or "Dry from morning to evening").
+- **UV advice** when it matters ("High UV. Pack sunscreen and hats.").
 
 ### Two activities for ages 4–8
 - Real places from OpenStreetMap: children's museums, science centres, aquariums, zoos, petting farms, planetariums, indoor play centres, theme parks, playgrounds and more.
@@ -67,6 +69,8 @@
   - Mixed weather → one indoor and one outdoor idea, with the outdoor one assigned to the drier day.
 - A short explanation of why each type of place suits young children, plus a note on how the weather affected the pick.
 - Address, distance from the centre, website, and opening hours when the source lists them (clearly marked as community-maintained).
+- **Real photos of the place itself** from Wikimedia Commons (found through the place's Wikidata link), credited with the photographer and licence. Cards fall back to an icon when no photo exists, so there are never broken images.
+- **Show me another**: swap either idea for the next-best runner-up, picked from a different category first.
 - An **Apple Maps** directions link and a link to the source record.
 
 ### One Italian restaurant
@@ -74,9 +78,30 @@
 - If nothing can be verified, the app says so and doesn't guess.
 - Family details are shown only when the listing includes them: kids' area, high chairs, outdoor seating, wheelchair access.
 - A plain caveat that prices, availability and today's opening hours are not verified.
+- **Show me another** cycles through other verified Italian options nearby.
+
+### Your weekend, planned
+- A **timeline**:
+  - outdoor ideas land on the day with the better forecast, starting in its driest stretch;
+  - indoor ideas take the other day;
+  - dinner is an early Saturday evening.
+- A **map** (MapLibre with OpenFreeMap vector tiles, no API key) with numbered pins that match the timeline. Tapping a stop or a pin highlights the other. The map follows the light/dark theme, and it loads only when it scrolls into view, so it adds nothing to the first page load.
+- **Add to Calendar** downloads a standards-compliant `.ics` file with events in the city's own time zone, plus addresses, coordinates and source links.
+- **Share** uses the phone's own share sheet, or copies the link on desktop.
+
+<p align="center">
+  <img src="docs/screenshots/plan.png" width="49%" alt="Weekend plan with map, light" />
+  <img src="docs/screenshots/plan-dark.png" width="49%" alt="Weekend plan with map, dark" />
+</p>
+
+### Getting to a city faster
+- **Near me** finds the closest city to the browser's location. The coordinates are rounded to about 1 km before any lookup and are never stored.
+- **Recently viewed** cities appear on the home page. They are kept on the device only.
+- **Popular cities are pre-loaded** in the background after every deploy and every 3 hours, so a demo of Paris, Tokyo, Sydney, Springfield or Portland is instant.
 
 ### Transparent sourcing
 - Every section shows its **source** and **when the data was retrieved**, and whether it came from the cache.
+- If a source is down but a recent result exists, the app shows that result **clearly labelled**: *"Live source unavailable. Showing the last saved results."*, with the original retrieval time.
 - A **"How we found this"** panel lists every provider that was tried and what happened, for example *"Overpass: all servers timed out → Nominatim: used for these results"*.
 
 ### Protected Settings page
@@ -98,6 +123,8 @@ Signed in through **Authelia**. From there you can:
   - gentle hover lift on cards.
 - Motion is switched off automatically for users who prefer reduced motion.
 - Responsive from 320 px phones to wide desktops, with no horizontal scrolling.
+- **Installable as an app**, with a web manifest, home-screen icons and a service worker. The app shell works offline; data always comes live from the server.
+- **Accessible:** WCAG 2.1 AA colour contrast in both themes and keyboard-reachable scroll areas, checked automatically with axe on every push.
 - Skeleton loaders, a "still looking…" message on slow loads, and friendly empty and error states with a **Try Again** button.
 
 <p align="center">
@@ -123,6 +150,10 @@ flowchart LR
     PL --> GA[Geoapify<br/>optional free key]
     PL --> OV[Overpass mirrors<br/>raced in parallel]
     PL --> NO[Nominatim<br/>last resort]
+    P --> WM[Wikidata + Wikimedia Commons<br/>place photos]
+    P <--> DB[(SQLite cache<br/>in the data volume)]
+    U -.->|map tiles| OFM[OpenFreeMap]
+    U -.->|photos| WMI[upload/thumb.wikimedia.org]
 ```
 
 1. The browser loads the React single-page app, which is served by FastAPI behind Caddy.
@@ -130,6 +161,8 @@ flowchart LR
 3. The **weather**, **activities** and **restaurant** sections then load **in parallel**, each with its own loading, error and empty state. A slow places provider never holds up the forecast.
 4. The activities endpoint reuses the cached forecast so it can lean indoor or outdoor.
 5. Places requests go through a **provider chain**. A provider that fails is skipped for 3 minutes (a circuit breaker), so every visitor isn't kept waiting on the same timeout.
+6. Everything is cached in **SQLite in the data volume**, so results survive restarts and deploys. When a source fails, the last good result is served and labelled as saved rather than live.
+7. The picks and runners-up get **photos** from Wikidata and Wikimedia Commons in one batched lookup, cached for a week.
 
 ---
 
@@ -138,11 +171,12 @@ flowchart LR
 | Layer | Choice | Why |
 |---|---|---|
 | Backend | **Python 3.12, FastAPI, httpx (async), Pydantic** | Mostly API calls plus scoring rules; async lets three sections load concurrently |
-| Frontend | **React 18, TypeScript, Vite, Framer Motion, lucide-react, Inter (self-hosted)** | Typed, fast builds, polished motion, no third-party CDNs |
+| Frontend | **React 18, TypeScript, Vite, Framer Motion, MapLibre GL, lucide-react, Inter (self-hosted)** | Typed, fast builds, polished motion, a key-free vector map, no third-party CDNs |
+| Cache | **SQLite** (in the data volume) | Survives restarts and deploys; enables a "last known good" fallback |
 | Reverse proxy | **Caddy 2.8** | Automatic HTTPS (Let's Encrypt or local CA), simple `forward_auth`, security headers |
 | Auth | **Authelia 4.39** | Battle-tested SSO portal; file-based user with argon2id password hash |
 | Runtime | **Docker Compose** | One command to run; `restart: unless-stopped` keeps it alive |
-| Tests | **pytest** (unit), **Playwright** (end-to-end and screenshots) | Logic correctness plus real-browser checks |
+| Tests | **pytest** (unit), **Playwright + axe-core** (browser and accessibility), **Lighthouse CI** | Logic correctness, real-browser behaviour, WCAG AA, performance budgets |
 
 ---
 
@@ -153,7 +187,7 @@ flowchart LR
 ├── backend/
 │   ├── app/
 │   │   ├── main.py              # FastAPI routes, SPA serving, admin API
-│   │   ├── core.py              # shared HTTP client, TTL cache, SourceError, outage simulation
+│   │   ├── core.py              # shared HTTP client, SQLite cache with stale fallback, SourceError
 │   │   ├── settings_store.py    # runtime settings (JSON file, 0600) with env fallbacks + masking
 │   │   ├── weekend.py           # "next Saturday on or after today" rule
 │   │   ├── recommend.py         # classification, weather-aware scoring, explanations
@@ -162,20 +196,28 @@ flowchart LR
 │   │       ├── weather.py       # Open-Meteo forecast + WMO code mapping
 │   │       ├── osm.py           # Overpass (mirror race) + Nominatim (throttled)
 │   │       ├── keyed.py         # Geoapify + Google Places (New)
+│   │       ├── photos.py        # Wikidata P18 → Wikimedia Commons photos with credits
 │   │       └── places.py        # provider chain + circuit breaker
-│   ├── tests/test_logic.py      # weekend rule, classification, scoring
+│   ├── tests/test_logic.py      # weekend rule, scoring, best window, alternates, cache fallback
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx              # shell, nav, theme toggle, routes
 │   │   ├── theme.tsx            # light/dark toggle (system → user choice)
+│   │   ├── plan.ts              # weekend timeline + iCalendar export
+│   │   ├── recent.ts            # recently viewed cities (device only)
 │   │   ├── api.ts               # fetch wrapper + useApi hook
 │   │   ├── format.ts            # dates in city time, unit conversion, flags
 │   │   ├── styles.css           # design tokens + components
-│   │   ├── components/          # CitySearch, WeatherSection, places, WeatherIcon, ui
+│   │   ├── components/          # CitySearch, WeatherSection, places, PlanSection, MapView, WeatherIcon, ui
 │   │   └── pages/               # Planner (home + city), Settings
+│   ├── public/                  # favicon, app icons, web manifest, service worker
 │   └── package.json
-├── .github/workflows/ci-cd.yml  # test → build → deploy pipeline
+├── e2e/                         # Playwright + axe browser tests (run in CI)
+├── .github/
+│   ├── workflows/ci-cd.yml      # test → image → e2e → GHCR → deploy → Lighthouse
+│   ├── dependabot.yml           # weekly dependency PRs
+│   └── lighthouserc.json        # Lighthouse budgets
 ├── authelia/configuration.yml   # no secrets; domain injected via template filter
 ├── Caddyfile
 ├── docker-compose.yml
@@ -183,7 +225,7 @@ flowchart LR
 ├── scripts/
 │   ├── setup.sh                 # .env, Authelia secrets, admin user, data dirs
 │   ├── server-bootstrap.sh      # fresh Ubuntu: Docker, swap, app user, firewall, deploy key
-│   └── deploy.sh                # pull tested commit, rebuild, health-check, roll back on failure
+│   └── deploy.sh                # pull the tested image, health-check, roll back on failure
 ├── docs/screenshots/
 ├── .env.example
 └── VERIFICATION.md
@@ -278,36 +320,45 @@ Every push to `main` is tested and then deployed to the server automatically. Pu
 flowchart LR
     P[git push main] --> B[Backend tests<br/>pytest]
     P --> F[Frontend<br/>tsc + vite build]
-    P --> D[Docker<br/>image build, compose + Caddyfile validation]
-    B & F & D --> X[Deploy job]
-    X -->|SSH, forced command| S[scripts/deploy.sh on server]
-    S --> R[git reset to the tested SHA<br/>docker compose up --build]
+    P --> I[Image job<br/>build once · compose + Caddyfile validation]
+    I --> E[Browser + axe tests<br/>against that exact image]
+    E --> G[Push image to GHCR<br/>tagged with the commit SHA]
+    B & F & G --> X[Deploy job]
+    X -->|SSH forced command<br/>+ short-lived token on stdin| S[scripts/deploy.sh]
+    S --> R[git reset to the tested SHA<br/>docker pull the tested image]
     R --> H{App healthy?}
     H -->|yes| OK[Prune old images ✓]
-    H -->|no| RB[Roll back to previous commit ✗]
-    X --> T[Smoke test<br/>/api/health, home page,<br/>Settings still protected]
+    H -->|no| RB[Roll back to the previous image ✗]
+    X --> T[Smoke test<br/>health, home page,<br/>Settings still protected]
+    T --> L[Lighthouse<br/>live site audit]
 ```
 
 Workflow: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 
 | Job | Runs on | What it checks |
 |---|---|---|
-| **Backend tests** | push, PR | `pytest` on Python 3.12 |
+| **Backend tests** | push, PR | `pytest` on Python 3.12: weekend rule, scoring, best window, alternates, cache fallback |
 | **Frontend** | push, PR | `npm ci`, TypeScript type-check and production build on Node 22 |
-| **Docker** | push, PR | Builds the app image, validates `docker-compose.yml`, validates the Caddyfile in both TLS modes |
-| **Deploy** | push to `main` only, after all three pass | SSH deploy plus a post-deploy smoke test |
+| **Image, browser & accessibility tests** | push, PR | Validates `docker-compose.yml` and the Caddyfile (both TLS modes), builds the app image once (with layer caching), runs it, then runs the **Playwright + axe** suite against it. On `main` it pushes the image to **GHCR** (`ghcr.io/zezekim/weekender-app:<sha>`). |
+| **Deploy** | push to `main` only, after all three pass | SSH deploy of the tested image, plus a post-deploy smoke test |
+| **Lighthouse** | after each deploy | Audits the live home and city pages (3 runs each). Accessibility below 95 fails the run; performance, best practices and SEO warn. The report is uploaded as a public link. |
+
+[Dependabot](.github/dependabot.yml) opens weekly pull requests for pip, npm, Docker and GitHub Actions updates. Each one runs the full suite before it can merge.
 
 ### How the deploy works
 
 1. The deploy job connects as `weekender@SERVER` with a dedicated ed25519 key. The server's host key is pinned in a secret, and `StrictHostKeyChecking=yes` is set.
 2. On the server, that key is restricted in `authorized_keys` to `command="/opt/weekender/scripts/deploy.sh"`. Even if the key leaked, it could only trigger a redeploy of code that is already on `main`.
-3. The workflow passes the **commit SHA that passed CI**. `deploy.sh` accepts it only if it is a full SHA that exists on `origin/main`; otherwise it deploys the tip of `main`.
-4. `deploy.sh` then:
+3. The workflow passes the **commit SHA that passed CI** as the SSH command. `deploy.sh` accepts it only if it is a full SHA that exists on `origin/main`.
+4. The job's **short-lived `GITHUB_TOKEN`** (read-only for packages) goes over **stdin**, so it never appears in a command line or log. The server uses it once to pull `weekender-app:<sha>` from GHCR, then logs out. The token expires when the job ends.
+5. `deploy.sh` then:
    - takes a lock, so only one deploy runs at a time;
-   - resets the checkout to that commit and runs `docker compose up -d --build`;
+   - resets the checkout to that commit;
+   - keeps the running image as `weekender-app:previous`, then switches to the tested image;
+   - if the registry can't be reached, it falls back to building on the server;
    - waits up to 3 minutes for the app's health check to pass;
-   - on success, prunes old images; on failure, **rolls back** to the previous commit and fails the job.
-5. The smoke test checks `/api/health` and the home page over public HTTPS, and confirms the Settings API still returns 401/302 without a login.
+   - on success, prunes old images; on failure, **rolls back** to the previous commit and image (no rebuild needed) and fails the job.
+6. The smoke test checks `/api/health` and the home page over public HTTPS, and confirms the Settings API still returns 401/302 without a login. Lighthouse then audits the live site.
 
 `.env`, the Authelia secrets and `data/` are git-ignored, so deploys never touch configuration or saved settings.
 
@@ -323,7 +374,7 @@ Workflow: [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
 
 ### Manual deploys and rotating the key
 
-- **Re-run a deploy:** Actions → CI/CD → *Run workflow*, or on the server `sudo -iu weekender /opt/weekender/scripts/deploy.sh`.
+- **Re-run a deploy:** Actions → CI/CD → *Run workflow*, or on the server `sudo -iu weekender /opt/weekender/scripts/deploy.sh`. Run by hand, it has no registry token, so it builds on the server.
 - **Rotate the key:**
   1. `ssh-keygen -t ed25519 -f deploy_key -N ""`
   2. Replace the line in `/home/weekender/.ssh/authorized_keys`, keeping the `command=…` prefix.
@@ -388,11 +439,26 @@ Runtime settings are stored in `data/app/settings.json` (mode `0600`). Authelia 
 | [OpenStreetMap Nominatim](https://nominatim.org/) | none | Fallback place search | Throttled to 1 request per second, per its usage policy |
 | [Geoapify Places](https://www.geoapify.com/places-api/) | free key | Faster, more reliable place search | OSM-based |
 | [Google Places (New)](https://developers.google.com/maps/documentation/places/web-service) | paid key | Ratings and a "good for children" flag | Opt-in |
+| [Wikidata](https://www.wikidata.org/) + [Wikimedia Commons](https://commons.wikimedia.org/) | none | Photos of the exact place, with author and licence | Only for places whose OSM record links to Wikidata |
+| [OpenFreeMap](https://openfreemap.org/) | none | Vector map tiles (`positron` and `dark` styles) | Loaded by the browser |
+| Nominatim reverse geocoding | none | "Near me" → nearest locality | Coordinates rounded to about 1 km, never stored |
 
 ### Caching
 
-| Data | TTL |
-|---|---|
+Everything is cached in SQLite (`data/app/cache.sqlite3`), so results survive restarts and deploys.
+
+| Data | Fresh for | Then, if the source is down |
+|---|---|---|
+| Geocoding | 24 h | — |
+| Forecast | 30 min | the last forecast, up to 12 h old, labelled as saved |
+| Places | 6 h | the last results, up to 14 days old, labelled as saved |
+| Photos | 7 days | up to 60 days |
+
+Failures are never cached. The "Retrieved" time always shows when the data was originally fetched.
+
+Popular cities (Paris, Tokyo, Sydney, Springfield MO, Portland OR) are **pre-loaded** 15 s after start-up and every 3 hours. Set `PREWARM_CITIES` to a comma-separated list of GeoNames IDs to change them, or to an empty value to switch it off.
+
+---|---|
 | Geocoding | 24 h |
 | Forecast | 30 min |
 | Places | 6 h |
@@ -409,10 +475,11 @@ All endpoints return JSON. When a source fails, the response is **HTTP 503** wit
 |---|---|---|
 | `GET` | `/api/health` | Liveness check |
 | `GET` | `/api/cities?q=Springfield` | City search (up to 10 results) |
+| `GET` | `/api/cities/nearest?lat=&lon=` | Nearest city to coordinates (for "Near me") |
 | `GET` | `/api/cities/{id}` | City, its local time and the target weekend dates |
-| `GET` | `/api/cities/{id}/weather` | Saturday and Sunday forecast, units, source and retrieval time |
-| `GET` | `/api/cities/{id}/activities` | Two picks, weather summary, provider attempts |
-| `GET` | `/api/cities/{id}/restaurant` | One verified Italian pick (or `none_found`), provider attempts |
+| `GET` | `/api/cities/{id}/weather` | Saturday and Sunday forecast with best outdoor window and UV note, units, source, retrieval time and stale flag |
+| `GET` | `/api/cities/{id}/activities` | Two picks plus runners-up (`alternates`), photos, weather summary, provider attempts, stale flag |
+| `GET` | `/api/cities/{id}/restaurant` | One verified Italian pick (or `none_found`) plus alternates, photos, provider attempts |
 | `GET` | `/api/admin/settings` 🔒 | Current settings (secrets masked) |
 | `PUT` | `/api/admin/settings` 🔒 | Partial update. For secrets: `null` keeps the value, `""` clears it, a string sets it |
 | `POST` | `/api/admin/test/{source}` 🔒 | Live check: `geocoding`, `weather`, `overpass`, `nominatim`, `geoapify` or `google` |
@@ -476,6 +543,9 @@ Nothing about opening hours, prices or availability is ever made up.
 | Fewer than two suitable activities | The ones that were found, plus "We could only find one good match." |
 | Opening hours come from OSM | Labelled *"Community-maintained, so check before you go."* |
 | A slow response (> 8 s) | "Still looking. The free map servers are busy right now…" |
+| A source is down, but a recent result is saved | That result, labelled *"Live source unavailable. Showing the last saved results."*, with its original retrieval time |
+| No photo exists, or it fails to load | The card quietly shows its icon instead. Never a broken image. |
+| The map can't load (no WebGL) | "The map couldn't load on this device. Every place still has a Directions link." |
 
 The **simulate an outage** switches in Settings trigger any of these on demand.
 
@@ -496,7 +566,8 @@ The **simulate an outage** switches in Settings trigger any of these on demand.
   - `.env`, the Authelia secrets and the user database are git-ignored and stored with mode `0600`.
   - API keys are never sent to the browser in full and never appear in frontend code.
 - **HTTP security headers:**
-  - a strict **Content-Security-Policy**: `default-src 'self'`, no inline scripts, no third-party origins;
+  - a strict **Content-Security-Policy**: `default-src 'self'` and no inline scripts. Exactly two third parties are allowed, each for one job: Wikimedia image hosts for photos, and `tiles.openfreemap.org` for map tiles. `blob:` workers are allowed for the map renderer;
+  - `Permissions-Policy` allows geolocation for this site only (for "Near me"); camera and microphone are off;
   - HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy` and `Permissions-Policy`;
   - the `Server` header is removed.
 - **Self-hosted fonts**, so no requests go to third-party CDNs.
@@ -543,14 +614,22 @@ The unit tests cover:
 - rain leading to indoor picks, mixed weather pairing indoor with outdoor, and missing weather still producing picks with a caveat;
 - a restaurant without a verified cuisine never being recommended.
 
-End-to-end checks were run with **Playwright** and **curl** against the full Docker stack:
-- a normal search;
-- an ambiguous name ("Springfield");
-- a real Overpass outage and simulated outages;
-- the Authelia login, including a wrong password and a forged header;
-- security headers;
-- desktop and mobile layouts in both themes;
-- console errors and broken assets.
+Browser tests (`e2e/`, **Playwright + axe-core**) run in CI against the built image on every push and pull request. They check:
+- the home page renders, and passes **axe WCAG 2.1 AA** with no serious or critical issues, in light **and** dark mode;
+- "Springfield" returns at least 3 results, each distinguishable by region and country;
+- the city page shows the right weekend dates, computed independently in the test with the city's time zone;
+- every recommendation card is fully visible (opacity checked) and links to an `https://` source;
+- **Add to Calendar** produces a valid `.ics` file in the city's time zone;
+- simulated weather and places outages produce three clear alerts with **Try Again**;
+- the theme toggle switches and survives a reload;
+- the mobile layout (iPhone 13) has no horizontal scroll.
+
+```bash
+docker run -d -p 8000:8000 -e ADMIN_AUTH_DISABLED=1 -e PREWARM_CITIES= weekender-app:latest
+cd e2e && npm ci && npx playwright install chromium && npx playwright test
+```
+
+After every deploy, **Lighthouse CI** audits the live site.
 
 Results are in **[VERIFICATION.md](VERIFICATION.md)**.
 
@@ -573,19 +652,19 @@ Results are in **[VERIFICATION.md](VERIFICATION.md)**.
 - **Cold loads can be slow without a key.** If Overpass is down and Nominatim takes over, activities can take 20–30 s on the first load for a city. They are cached for 6 hours afterwards. A free **Geoapify** key brings this down to about 1 s.
 - **OSM data quality varies.** Names, websites, hours and categories are community-maintained, so a place may have closed or be mis-tagged. Google Places, if enabled, reduces this risk.
 - **Nominatim's restaurant search relies on names** ("italian restaurant", "pizzeria", "trattoria"), so its recall is lower than a tag-based search.
-- **The cache and circuit breaker are in memory.** They reset on restart and are per process.
+- **The circuit breaker is in memory.** It resets on restart; the data cache itself is persistent.
 - **There is one admin user, with no 2FA by default.** Authelia supports TOTP; enabling it is a one-line config change.
-- **Browser end-to-end tests are not in CI yet.** CI runs the unit tests, type-check, builds and config validation; the Playwright checks are run manually.
-- **Images are built on the server.** On a 1 vCPU machine a deploy takes a few minutes. Building in CI and pushing to GHCR would make deploys faster.
+- **Browser tests use the real public data sources,** so a very slow day for OpenStreetMap can make a run slower (one automatic retry in CI).
+- **Photos exist only where OpenStreetMap links a place to Wikidata.** Smaller venues show their icon instead.
 
 ## Roadmap
 
+- [x] Playwright and axe browser tests in GitHub Actions
+- [x] Build images in CI and pull them from GHCR on the server
+- [x] Persistent cache with a "last known good" fallback
+- [x] Map, photos, weekend plan, calendar export, share, near me, installable app
 - [ ] TOTP two-factor login for Settings
-- [ ] A shared Redis cache and rate limiter
-- [ ] Playwright end-to-end tests in GitHub Actions
-- [ ] Build images in CI and pull them from GHCR on the server
-- [ ] Map previews (self-hosted tiles) and venue photos from Wikimedia Commons
-- [ ] Indoor/outdoor filters and age sliders
+- [ ] Indoor/outdoor filters and an age slider
 - [ ] Structured logs and basic metrics
 
 ---
@@ -595,6 +674,8 @@ Results are in **[VERIFICATION.md](VERIFICATION.md)**.
 - Weather data © [Open-Meteo](https://open-meteo.com/), CC BY 4.0.
 - City data © [GeoNames](https://www.geonames.org/), CC BY 4.0.
 - Place data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), ODbL.
+- Place photos from [Wikimedia Commons](https://commons.wikimedia.org/); each is credited with its author and licence in the app.
+- Map tiles © [OpenFreeMap](https://openfreemap.org/), © OpenMapTiles, data © OpenStreetMap contributors. Map rendering by [MapLibre GL JS](https://maplibre.org/) (BSD-3-Clause).
 - Icons by [Lucide](https://lucide.dev), ISC. Inter typeface, SIL Open Font License.
 
 © zezekim

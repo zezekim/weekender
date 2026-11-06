@@ -7,3 +7,4 @@ data
 authelia
 .env
 .git
+e2e
