@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -82,7 +82,7 @@ jobs:
           docker run -d --name app -p 8000:8000 -e ADMIN_AUTH_DISABLED=1 -e PREWARM_CITIES= weekender-app:ci
           curl -fsS --retry 20 --retry-delay 2 --retry-all-errors http://localhost:8000/api/health
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
