@@ -1,0 +1,55 @@
+{
+	admin off
+}
+
+(app_headers) {
+	header {
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		X-Frame-Options DENY
+		Permissions-Policy "geolocation=(), camera=(), microphone=()"
+	}
+}
+
+{$APP_DOMAIN} {
+	tls {$TLS_MODE:internal}
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	# Never trust identity headers from the client; only Authelia sets these.
+	request_header -Remote-User
+	request_header -Remote-Groups
+	request_header -Remote-Email
+	request_header -Remote-Name
+
+	# Authelia login portal
+	handle /authelia* {
+		reverse_proxy authelia:9091
+	}
+
+	# Settings page and admin API require a signed-in Authelia user
+	@protected path /settings /settings/* /api/admin/*
+	handle @protected {
+		forward_auth authelia:9091 {
+			uri /authelia/api/authz/forward-auth
+			copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+		}
+		import app_headers
+		reverse_proxy app:8000
+	}
+
+	handle {
+		import app_headers
+		reverse_proxy app:8000
+	}
+}
+
+# Anything else on plain HTTP (e.g. http://<server-ip>) goes to the canonical HTTPS host.
+http:// {
+	redir https://{$APP_DOMAIN}{uri} permanent
+}

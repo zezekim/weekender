@@ -1,0 +1,72 @@
+# Weekender — Family Weekend Planner
+#
+#   caddy    :80/:443  TLS, security headers, forward-auth  (only published service)
+#   authelia internal  login portal protecting /settings and /api/admin/*
+#   app      internal  FastAPI + built React frontend
+#
+# Run `scripts/setup.sh` once, then `docker compose up -d --build`.
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  app:
+    <<: *hardening
+    build: .
+    image: weekender-app:latest
+    user: "${PUID:-10001}:${PGID:-10001}"
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - ./data/app:/data
+    tmpfs: [/tmp]
+    networks: [internal]
+
+  authelia:
+    <<: *hardening
+    image: authelia/authelia:4.39
+    read_only: false # its startup checks fail on a read-only root fs
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      X_AUTHELIA_CONFIG_FILTERS: template
+      AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE: /config/secrets/jwt_secret
+      AUTHELIA_SESSION_SECRET_FILE: /config/secrets/session_secret
+      AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE: /config/secrets/storage_encryption_key
+    volumes:
+      - ./authelia:/config:ro
+      - ./data/authelia:/var/lib/authelia
+    tmpfs: [/tmp]
+    networks: [internal]
+
+  caddy:
+    <<: *hardening
+    image: caddy:2.8.4-alpine
+    cap_add: [NET_BIND_SERVICE]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      TLS_MODE: ${TLS_MODE:-internal}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app, authelia]
+    networks: [internal]
+
+networks:
+  internal:
+
+volumes:
+  caddy_data:
+  caddy_config:

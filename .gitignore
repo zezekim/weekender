@@ -1,0 +1,11 @@
+.env
+data/
+authelia/secrets/
+authelia/users_database.yml
+node_modules/
+dist/
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+*.tsbuildinfo
