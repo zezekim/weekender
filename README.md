@@ -1,6 +1,10 @@
 # Weekender
 
 [![CI/CD](https://github.com/zezekim/weekender/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/zezekim/weekender/actions/workflows/ci-cd.yml)
+![Lighthouse performance](https://img.shields.io/badge/performance-100-brightgreen?logo=lighthouse&logoColor=white)
+![Lighthouse accessibility](https://img.shields.io/badge/accessibility-100-brightgreen?logo=lighthouse&logoColor=white)
+![Lighthouse best practices](https://img.shields.io/badge/best%20practices-100-brightgreen?logo=lighthouse&logoColor=white)
+![WCAG 2.1 AA](https://img.shields.io/badge/WCAG%202.1-AA-0066cc)
 
 **Live:** https://173.230.134.61.sslip.io
 
@@ -629,7 +633,12 @@ docker run -d -p 8000:8000 -e ADMIN_AUTH_DISABLED=1 -e PREWARM_CITIES= weekender
 cd e2e && npm ci && npx playwright install chromium && npx playwright test
 ```
 
-After every deploy, **Lighthouse CI** audits the live site.
+After every deploy, **Lighthouse CI** audits the live site. The latest scores (median of 3 desktop runs) are below. The badges at the top show the home page.
+
+| Page | Performance | Accessibility | Best practices | SEO |
+|---|---|---|---|---|
+| Home | 100 | 100 | 100 | 91 |
+| City page (Paris) | 95 | 100 | 93 | 91 |
 
 Results are in **[VERIFICATION.md](VERIFICATION.md)**.
 
