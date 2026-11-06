@@ -14,7 +14,7 @@ import httpx
 
 from .. import settings_store
 from ..core import SourceError, client
-from ..recommend import haversine_km
+from ..recommend import KID_WORDS, SCIENCE_WORDS, haversine_km
 from .osm import ACTIVITY_RADIUS_KM, RESTAURANT_RADIUS_KM, candidate_from_tags
 
 # --------------------------------------------------------------------------- Geoapify
@@ -133,6 +133,15 @@ def _google_candidate(p: dict[str, Any], origin: tuple[float, float]) -> dict[st
     }
 
 
+def _name_fits(category: str, name: str) -> bool:
+    """Google only says "museum", so museum categories must be confirmed by the name."""
+    if category == "childrens_museum":
+        return bool(KID_WORDS.search(name))
+    if category == "science_center":
+        return bool(SCIENCE_WORDS.search(name))
+    return True
+
+
 async def google(lat: float, lon: float, kind: str) -> list[dict[str, Any]]:
     key = settings_store.get("google_places_api_key")
     if not key:
@@ -159,6 +168,8 @@ async def google(lat: float, lon: float, kind: str) -> list[dict[str, Any]]:
             if p.get("id") in seen or not types & set(p.get("types", [])):
                 continue
             c = _google_candidate(p, (lat, lon))
+            if c and not _name_fits(category, c["name"] or ""):
+                continue  # a text search for "children's museum" also returns ordinary museums
             if c and c["distance_km"] <= ACTIVITY_RADIUS_KM * 1.5:
                 seen.add(p["id"])
                 out.append({**c, "category": category})

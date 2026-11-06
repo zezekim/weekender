@@ -132,3 +132,12 @@ def test_cache_serves_stale_when_source_fails(tmp_path):
             return True
 
     assert asyncio.run(run())
+
+
+def test_google_museum_names_must_fit_category():
+    from app.providers.keyed import _name_fits
+    assert not _name_fits("childrens_museum", "Hyde Park Barracks")
+    assert not _name_fits("science_center", "Mind Games: Art Alive!")
+    assert _name_fits("childrens_museum", "Sydney Children's Museum")
+    assert _name_fits("science_center", "Powerhouse Science Centre")
+    assert _name_fits("aquarium", "SEA LIFE Sydney Aquarium")

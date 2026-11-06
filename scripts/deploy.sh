@@ -61,6 +61,17 @@ main() {
     docker compose up -d --build --remove-orphans
   fi
 
+  # Config files are bind-mounted, so a changed file doesn't recreate its
+  # container. Restart the ones whose configuration changed in this deploy.
+  if ! git diff --quiet "$previous" HEAD -- Caddyfile; then
+    echo "  Caddyfile changed; restarting Caddy"
+    docker compose restart caddy
+  fi
+  if ! git diff --quiet "$previous" HEAD -- authelia/configuration.yml; then
+    echo "  Authelia configuration changed; restarting Authelia"
+    docker compose restart authelia
+  fi
+
   if wait_healthy; then
     docker image prune -f >/dev/null
     echo "✓ Deployed ${sha:0:7}"
