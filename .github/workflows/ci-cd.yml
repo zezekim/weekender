@@ -21,7 +21,7 @@ jobs:
     name: Backend tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -37,7 +37,7 @@ jobs:
     name: Frontend type-check & build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -55,7 +55,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Lint shell scripts
         run: shellcheck -S warning scripts/*.sh
@@ -152,7 +152,7 @@ jobs:
           printf '%s\n' "$GHCR_TOKEN" | ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "${{ github.sha }}"
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: Caddyfile
           sparse-checkout-cone-mode: false
@@ -182,7 +182,7 @@ jobs:
     needs: deploy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Audit home and a city page
         uses: treosh/lighthouse-ci-action@v12
         with:
